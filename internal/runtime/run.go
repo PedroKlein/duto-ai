@@ -51,22 +51,16 @@ func Run(ctx context.Context, configPath, workflowPath string, opts ...Option) e
 		return err
 	}
 
-	eventCtx, err := prompt.LoadEventContext()
-	if err != nil {
-		log.Printf("Warning: could not load event context: %v", err)
-	}
+	eventCtx, _ := prompt.LoadEventContext() //nolint:nolintlint // event context is optional
 
 	root, err := compiler.Compile(wf, cfg, reg, llm, eventCtx)
 	if err != nil {
 		return fmt.Errorf("compiling workflow: %w", err)
 	}
 
-	output, err := execute(ctx, root, wf)
-	if err != nil {
+	if _, err := execute(ctx, root, wf); err != nil {
 		return err
 	}
-
-	_ = output // final output available for future use (e.g. CLI printing)
 
 	log.Printf("Workflow %q completed successfully", wf.Name)
 

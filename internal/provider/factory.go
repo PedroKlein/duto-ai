@@ -8,7 +8,6 @@ import (
 	"regexp"
 
 	"google.golang.org/adk/v2/model"
-	"google.golang.org/genai"
 
 	"github.com/PedroKlein/adk-provider-sapaicore/sapaicore"
 	"github.com/PedroKlein/duto-ai/internal/config"
@@ -24,18 +23,6 @@ func NewLLM(ctx context.Context, cfg config.Provider, modelName string) (model.L
 		return newAICoreLLM(ctx, cfg, modelName)
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrUnknownProviderType, cfg.Type)
-	}
-}
-
-// ApplyModelConfig maps config.ModelConfig fields to genai.GenerateContentConfig.
-func ApplyModelConfig(gcc *genai.GenerateContentConfig, mc config.ModelConfig) {
-	if mc.Temperature != nil {
-		temp := float32(*mc.Temperature)
-		gcc.Temperature = &temp
-	}
-
-	if mc.MaxTokens != nil {
-		gcc.MaxOutputTokens = int32(*mc.MaxTokens)
 	}
 }
 
