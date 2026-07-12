@@ -1,0 +1,6 @@
+name: Simple No Tools
+
+steps:
+  - id: hello
+    prompt: "Say hello in exactly 3 words."
+    output: greeting

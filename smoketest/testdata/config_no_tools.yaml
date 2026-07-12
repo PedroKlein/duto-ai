@@ -1,0 +1,19 @@
+provider:
+  type: ai-core
+  config:
+    endpoint: ${AI_CORE_ENDPOINT}
+    resource_group: ${AI_CORE_RESOURCE_GROUP}
+    client_id: ${AI_CORE_CLIENT_ID}
+    client_secret: ${AI_CORE_CLIENT_SECRET}
+    auth_url: ${AI_CORE_AUTH_URL}
+
+models:
+  light: gpt-4.1-mini
+  medium: gpt-4.1-mini
+
+defaults:
+  model: medium
+  model_config:
+    temperature: 0.2
+    max_tokens: 512
+  tools: []

@@ -1,0 +1,9 @@
+name: Single Tool Test
+
+steps:
+  - id: read
+    tools: [github.read-pr]
+    prompt: |
+      Use the github.read-pr tool to read PR #42 from owner/repo.
+      Then summarize the PR title in one sentence.
+    output: summary
