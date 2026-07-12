@@ -1,0 +1,41 @@
+name: PR Code Review
+
+steps:
+  - id: gather
+    model: light
+    tools: [github.read-pr, github.read-diff, github.list-changed-files]
+    prompt: |
+      Read the PR metadata, diff, and changed files list.
+      Summarize the changes concisely: what was added, modified, removed.
+      Include the PR title, author, and branch info.
+    output: context
+
+  - id: analyze
+    needs: [gather]
+    model: heavy
+    tools: [files.read]
+    model_config:
+      temperature: 0.1
+    prompt: |
+      Analyze the PR changes for:
+      1. Code quality issues (bugs, logic errors, edge cases)
+      2. Security concerns
+      3. Performance implications
+      4. Style and convention violations
+
+      PR Context:
+      {{ .Steps.gather.Output }}
+    output: findings
+
+  - id: report
+    needs: [analyze]
+    model: medium
+    tools: [github.post-review, github.post-comment, github.add-labels]
+    prompt: |
+      Post the analysis findings as a PR review.
+      Use inline comments for specific line-level issues.
+      Use the review body for a summary.
+      Add appropriate labels (e.g., "needs-changes", "lgtm").
+
+      Findings:
+      {{ .Steps.analyze.Output }}
