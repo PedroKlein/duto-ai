@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
@@ -17,6 +18,7 @@ import (
 	"github.com/PedroKlein/duto-ai/internal/prompt"
 	"github.com/PedroKlein/duto-ai/internal/provider"
 	dtool "github.com/PedroKlein/duto-ai/internal/tool"
+	gh "github.com/PedroKlein/duto-ai/internal/tool/github"
 )
 
 // Run executes a duto-ai workflow end-to-end.
@@ -55,7 +57,9 @@ func Run(ctx context.Context, configPath, workflowPath string) error {
 	// 6. Create tool registry
 	reg := dtool.NewRegistry()
 
-	registerTools(reg)
+	if regErr := registerTools(reg); regErr != nil {
+		return fmt.Errorf("registering tools: %w", regErr)
+	}
 
 	// 7. Load event context
 	eventCtx, err := prompt.LoadEventContext()
@@ -223,7 +227,19 @@ func buildGCC(step config.Step, cfg *config.Config) *genai.GenerateContentConfig
 	return gcc
 }
 
-func registerTools(_ *dtool.Registry) {
-	// TODO: register ADK function tools wrapping GitHub client methods.
-	// Deferred to post-MVP: requires functiontool.New[In, Out] wiring per tool.
+func registerTools(reg *dtool.Registry) error {
+	token := os.Getenv("GITHUB_TOKEN")
+	baseURL := os.Getenv("GITHUB_API_URL")
+
+	if baseURL == "" {
+		baseURL = "https://api.github.com"
+	}
+
+	client := gh.NewClient(token, baseURL)
+
+	if err := gh.RegisterAll(reg, client); err != nil {
+		return fmt.Errorf("registering github tools: %w", err)
+	}
+
+	return nil
 }
