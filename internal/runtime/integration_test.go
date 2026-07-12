@@ -4,83 +4,104 @@ package runtime_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/PedroKlein/duto-ai/internal/config"
+	"github.com/PedroKlein/duto-ai/internal/runtime"
+	"github.com/PedroKlein/duto-ai/internal/testing/mockllm"
 )
 
-func TestIntegration_WorkflowParsing(t *testing.T) {
-	configPath := filepath.Join("testdata", "integration_config.yaml")
-	workflowPath := filepath.Join("testdata", "integration_workflow.yaml")
+func TestIntegration_FullPipeline_ThreeSteps(t *testing.T) {
+	mock := mockllm.New(
+		mockllm.Response{Text: "gathered: PR adds null check to config parser"},
+		mockllm.Response{Text: "analysis: code looks good, minor style nit on line 45"},
+		mockllm.Response{Text: "reported: posted review with 1 comment"},
+	)
 
-	cfg, err := config.LoadConfig(configPath)
-	if err != nil {
-		t.Fatalf("loading config: %v", err)
-	}
-
-	if cfg.Provider.Type != "ai-core" {
-		t.Errorf("provider type = %q, want ai-core", cfg.Provider.Type)
-	}
-
-	wf, err := config.LoadWorkflow(workflowPath)
-	if err != nil {
-		t.Fatalf("loading workflow: %v", err)
-	}
-
-	if err := config.ValidateWorkflow(wf); err != nil {
-		t.Fatalf("validation failed: %v", err)
-	}
-
-	if len(wf.Steps) != 3 {
-		t.Errorf("steps = %d, want 3", len(wf.Steps))
-	}
-
-	// Verify topological order
-	sorted, err := config.TopologicalSort(wf.Steps)
-	if err != nil {
-		t.Fatalf("sort: %v", err)
-	}
-
-	if sorted[0].ID != "gather" {
-		t.Errorf("first step = %q, want gather", sorted[0].ID)
-	}
-}
-
-func TestIntegration_FailFast(t *testing.T) {
-	// Verify that the runtime returns error on invalid config
 	ctx := context.Background()
-	_ = ctx
 
-	// Load a workflow with circular deps
-	wf := &config.Workflow{
-		Name: "circular",
-		Steps: []config.Step{
-			{ID: "a", Needs: []string{"b"}, Prompt: "x"},
-			{ID: "b", Needs: []string{"a"}, Prompt: "y"},
-		},
+	err := runtime.Run(ctx,
+		filepath.Join("testdata", "integration_config.yaml"),
+		filepath.Join("testdata", "integration_workflow.yaml"),
+		runtime.WithLLM(mock),
+	)
+	if err != nil {
+		t.Fatalf("runtime.Run: %v", err)
 	}
 
-	err := config.ValidateWorkflow(wf)
-	if err == nil {
-		t.Fatal("expected error for circular deps")
+	if mock.CallCount() != 3 {
+		t.Errorf("LLM called %d times, want 3", mock.CallCount())
 	}
 }
 
 func TestIntegration_OutputPassing(t *testing.T) {
-	// Verify template rendering with step outputs
-	wf, err := config.LoadWorkflow(filepath.Join("testdata", "integration_workflow.yaml"))
+	mock := mockllm.New(
+		mockllm.Response{Text: "STEP1_OUTPUT_MARKER_XYZ"},
+		mockllm.Response{Text: "received marker and analyzed"},
+		mockllm.Response{Text: "done"},
+	)
+
+	ctx := context.Background()
+
+	err := runtime.Run(ctx,
+		filepath.Join("testdata", "integration_config.yaml"),
+		filepath.Join("testdata", "integration_workflow.yaml"),
+		runtime.WithLLM(mock),
+	)
 	if err != nil {
-		t.Fatalf("loading workflow: %v", err)
+		t.Fatalf("runtime.Run: %v", err)
 	}
 
-	analyzeStep := wf.Steps[1]
-	if analyzeStep.ID != "analyze" {
-		t.Fatalf("step[1] = %q, want analyze", analyzeStep.ID)
+	// Step 2 should have received step 1's output in its rendered prompt
+	calls := mock.Calls()
+	if len(calls) < 2 {
+		t.Fatalf("expected at least 2 calls, got %d", len(calls))
 	}
 
-	// The prompt should reference .Steps.gather.Output
-	if analyzeStep.Prompt == "" {
-		t.Error("analyze step should have a prompt")
+	// Check that step 2's user message contains step 1's output
+	step2Call := calls[1]
+	found := false
+
+	for _, content := range step2Call.Contents {
+		for _, part := range content.Parts {
+			if strings.Contains(part.Text, "STEP1_OUTPUT_MARKER_XYZ") {
+				found = true
+			}
+		}
+	}
+
+	if !found {
+		t.Error("step 2 prompt should contain step 1's output (STEP1_OUTPUT_MARKER_XYZ)")
+	}
+}
+
+func TestIntegration_FailFast(t *testing.T) {
+	mock := mockllm.New(
+		mockllm.Response{Text: "step 1 ok"},
+		mockllm.Response{Error: fmt.Errorf("simulated LLM failure")},
+		mockllm.Response{Text: "step 3 should never run"},
+	)
+
+	ctx := context.Background()
+
+	err := runtime.Run(ctx,
+		filepath.Join("testdata", "integration_config.yaml"),
+		filepath.Join("testdata", "integration_workflow.yaml"),
+		runtime.WithLLM(mock),
+	)
+
+	if err == nil {
+		t.Fatal("expected error from failed step")
+	}
+
+	if !strings.Contains(err.Error(), "analyze") {
+		t.Errorf("error should mention failing step 'analyze', got: %v", err)
+	}
+
+	// Step 3 should never have been called
+	if mock.CallCount() != 2 {
+		t.Errorf("LLM called %d times, want 2 (step 3 should not execute)", mock.CallCount())
 	}
 }

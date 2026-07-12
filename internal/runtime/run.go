@@ -22,7 +22,11 @@ import (
 )
 
 // Run executes a duto-ai workflow end-to-end.
-func Run(ctx context.Context, configPath, workflowPath string) error {
+func Run(ctx context.Context, configPath, workflowPath string, opts ...Option) error {
+	var options Options
+	for _, opt := range opts {
+		opt(&options)
+	}
 	// 1. Load config
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
@@ -48,16 +52,24 @@ func Run(ctx context.Context, configPath, workflowPath string) error {
 		modelName = config.ResolveModel(modelName, cfg.Models)
 	}
 
-	// 5. Create provider
-	llm, err := provider.NewLLM(ctx, cfg.Provider, modelName)
-	if err != nil {
-		return fmt.Errorf("creating LLM provider: %w", err)
+	// 5. Create provider (or use injected LLM)
+	var llm model.LLM
+
+	if options.LLM != nil {
+		llm = options.LLM
+	} else {
+		var llmErr error
+
+		llm, llmErr = provider.NewLLM(ctx, cfg.Provider, modelName)
+		if llmErr != nil {
+			return fmt.Errorf("creating LLM provider: %w", llmErr)
+		}
 	}
 
 	// 6. Create tool registry
 	reg := dtool.NewRegistry()
 
-	if regErr := registerTools(reg); regErr != nil {
+	if regErr := registerTools(reg, options.GitHubBaseURL); regErr != nil {
 		return fmt.Errorf("registering tools: %w", regErr)
 	}
 
@@ -97,39 +109,65 @@ func Run(ctx context.Context, configPath, workflowPath string) error {
 }
 
 func executeStep(ctx context.Context, step config.Step, cfg *config.Config, llm model.LLM, reg *dtool.Registry, eventCtx *prompt.EventContext, outputs map[string]string) (string, error) {
-	// Build system prompt
-	systemPrompt := prompt.BuildSystemPrompt(step, cfg, eventCtx)
-
-	// Resolve tools
-	toolNames := dtool.ResolveNames(cfg.Defaults.Tools, step.Tools)
-	resolvedTools := reg.Resolve(toolNames)
-
-	// Build agent config
-	agentCfg := llmagent.Config{
-		Name:        step.ID,
-		Description: fmt.Sprintf("Step %q", step.ID),
-		Instruction: systemPrompt,
-		Model:       llm,
-		Mode:        llmagent.ModeSingleTurn,
-	}
-
-	// Apply model config
-	gcc := buildGCC(step, cfg)
-	if gcc != nil {
-		agentCfg.GenerateContentConfig = gcc
-	}
-
-	// Wire tools
-	if len(resolvedTools) > 0 {
-		agentCfg.Toolsets = []tool.Toolset{dtool.NewToolset(resolvedTools)}
-	}
+	agentCfg := buildAgentConfig(step, cfg, llm, reg, eventCtx)
 
 	a, err := llmagent.New(agentCfg)
 	if err != nil {
 		return "", fmt.Errorf("creating agent: %w", err)
 	}
 
-	// Create runner
+	userPrompt, err := renderStepPrompt(step, outputs)
+	if err != nil {
+		return "", fmt.Errorf("rendering prompt: %w", err)
+	}
+
+	return runAgent(ctx, a, userPrompt)
+}
+
+func buildAgentConfig(step config.Step, cfg *config.Config, llm model.LLM, reg *dtool.Registry, eventCtx *prompt.EventContext) llmagent.Config {
+	systemPrompt := prompt.BuildSystemPrompt(step, cfg, eventCtx)
+
+	toolNames := dtool.ResolveNames(cfg.Defaults.Tools, step.Tools)
+	resolvedTools := reg.Resolve(toolNames)
+
+	agentCfg := llmagent.Config{
+		Name:        step.ID,
+		Description: fmt.Sprintf("Step %q", step.ID),
+		Instruction: systemPrompt,
+		Model:       llm,
+		Mode:        llmagent.ModeChat,
+	}
+
+	gcc := buildGCC(step, cfg)
+	if gcc != nil {
+		agentCfg.GenerateContentConfig = gcc
+	}
+
+	if len(resolvedTools) > 0 {
+		agentCfg.Toolsets = []tool.Toolset{dtool.NewToolset(resolvedTools)}
+	}
+
+	return agentCfg
+}
+
+func renderStepPrompt(step config.Step, outputs map[string]string) (string, error) {
+	templateData := prompt.TemplateData{
+		Steps: make(map[string]prompt.StepOutput),
+	}
+
+	for id, out := range outputs {
+		templateData.Steps[id] = prompt.StepOutput{Output: out}
+	}
+
+	rendered, err := prompt.RenderPrompt(step.Prompt, templateData)
+	if err != nil {
+		return "", fmt.Errorf("rendering step %q prompt: %w", step.ID, err)
+	}
+
+	return rendered, nil
+}
+
+func runAgent(ctx context.Context, a agent.Agent, userPrompt string) (string, error) {
 	sessService := session.InMemoryService()
 
 	r, err := runner.New(runner.Config{
@@ -141,7 +179,6 @@ func executeStep(ctx context.Context, step config.Step, cfg *config.Config, llm 
 		return "", fmt.Errorf("creating runner: %w", err)
 	}
 
-	// Create session
 	createResp, err := sessService.Create(ctx, &session.CreateRequest{
 		AppName: "duto-ai",
 		UserID:  "user",
@@ -151,35 +188,30 @@ func executeStep(ctx context.Context, step config.Step, cfg *config.Config, llm 
 	}
 
 	sessID := createResp.Session.ID()
-
-	// Render user prompt with step outputs
-	templateData := prompt.TemplateData{
-		Steps: make(map[string]prompt.StepOutput),
-	}
-
-	for id, out := range outputs {
-		templateData.Steps[id] = prompt.StepOutput{Output: out}
-	}
-
-	userPrompt, err := prompt.RenderPrompt(step.Prompt, templateData)
-	if err != nil {
-		return "", fmt.Errorf("rendering prompt: %w", err)
-	}
-
-	// Build user message
 	msg := genai.NewContentFromText(userPrompt, "user")
 
-	// Execute
 	var lastOutput string
 
-	for event, err := range r.Run(ctx, "user", sessID, msg, agent.RunConfig{}) {
-		if err != nil {
-			return "", fmt.Errorf("execution error: %w", err)
+	for event, iterErr := range r.Run(ctx, "user", sessID, msg, agent.RunConfig{}) {
+		if iterErr != nil {
+			return "", fmt.Errorf("execution error: %w", iterErr)
 		}
 
-		if event != nil && event.Output != nil {
+		if event == nil {
+			continue
+		}
+
+		if event.Output != nil {
 			if s, ok := event.Output.(string); ok {
 				lastOutput = s
+			}
+		}
+
+		if event.Content != nil {
+			for _, part := range event.Content.Parts {
+				if part.Text != "" {
+					lastOutput = part.Text
+				}
 			}
 		}
 	}
@@ -227,9 +259,13 @@ func buildGCC(step config.Step, cfg *config.Config) *genai.GenerateContentConfig
 	return gcc
 }
 
-func registerTools(reg *dtool.Registry) error {
+func registerTools(reg *dtool.Registry, githubBaseURL string) error {
 	token := os.Getenv("GITHUB_TOKEN")
-	baseURL := os.Getenv("GITHUB_API_URL")
+	baseURL := githubBaseURL
+
+	if baseURL == "" {
+		baseURL = os.Getenv("GITHUB_API_URL")
+	}
 
 	if baseURL == "" {
 		baseURL = "https://api.github.com"
