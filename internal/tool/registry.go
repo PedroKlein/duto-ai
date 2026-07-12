@@ -4,30 +4,25 @@ import (
 	"maps"
 	"sort"
 	"sync"
-)
 
-// Tool is a minimal interface for a tool in the registry.
-// Implementations should also satisfy the ADK tool.Tool interface.
-type Tool interface {
-	Name() string
-	Description() string
-}
+	adktool "google.golang.org/adk/v2/tool"
+)
 
 // Registry is a catalog of all available tools.
 type Registry struct {
 	mu    sync.RWMutex
-	tools map[string]Tool
+	tools map[string]adktool.Tool
 }
 
 // NewRegistry creates an empty tool registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		tools: make(map[string]Tool),
+		tools: make(map[string]adktool.Tool),
 	}
 }
 
 // Register adds a tool to the registry.
-func (r *Registry) Register(name string, t Tool) {
+func (r *Registry) Register(name string, t adktool.Tool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -35,7 +30,7 @@ func (r *Registry) Register(name string, t Tool) {
 }
 
 // Get retrieves a tool by name.
-func (r *Registry) Get(name string) (Tool, bool) {
+func (r *Registry) Get(name string) (adktool.Tool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -45,11 +40,11 @@ func (r *Registry) Get(name string) (Tool, bool) {
 }
 
 // All returns all registered tools.
-func (r *Registry) All() map[string]Tool {
+func (r *Registry) All() map[string]adktool.Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	result := make(map[string]Tool, len(r.tools))
+	result := make(map[string]adktool.Tool, len(r.tools))
 	maps.Copy(result, r.tools)
 
 	return result

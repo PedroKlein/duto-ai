@@ -44,7 +44,7 @@ func BuildNode(step config.Step, cfg *config.Config, reg *dtool.Registry, eventC
 
 	// Wire tools as ADK Toolset
 	if len(resolvedTools) > 0 {
-		agentCfg.Toolsets = []tool.Toolset{dtool.NewADKToolset(resolvedTools)}
+		agentCfg.Toolsets = []tool.Toolset{dtool.NewToolset(resolvedTools)}
 	}
 
 	a, err := llmagent.New(agentCfg)

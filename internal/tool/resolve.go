@@ -3,6 +3,8 @@ package tool
 import (
 	"path"
 	"sort"
+
+	adktool "google.golang.org/adk/v2/tool"
 )
 
 // ResolveNames merges default tools with step-level tool overrides.
@@ -26,13 +28,13 @@ func ResolveNames(defaults []string, stepTools *[]string) []string {
 }
 
 // Resolve returns tools from the registry that match the given glob patterns.
-func (r *Registry) Resolve(patterns []string) []Tool {
+func (r *Registry) Resolve(patterns []string) []adktool.Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	seen := make(map[string]bool)
 
-	var result []Tool
+	var result []adktool.Tool
 
 	for _, pattern := range patterns {
 		for name, t := range r.tools {

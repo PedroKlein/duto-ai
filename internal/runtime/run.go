@@ -117,7 +117,7 @@ func executeStep(ctx context.Context, step config.Step, cfg *config.Config, llm 
 
 	// Wire tools
 	if len(resolvedTools) > 0 {
-		agentCfg.Toolsets = []tool.Toolset{dtool.NewADKToolset(resolvedTools)}
+		agentCfg.Toolsets = []tool.Toolset{dtool.NewToolset(resolvedTools)}
 	}
 
 	a, err := llmagent.New(agentCfg)

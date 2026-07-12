@@ -3,23 +3,72 @@ package tool_test
 import (
 	"testing"
 
-	"github.com/PedroKlein/duto-ai/internal/tool"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool/functiontool"
+
+	dtool "github.com/PedroKlein/duto-ai/internal/tool"
 )
 
-// mockTool is a minimal tool for testing.
-type mockTool struct {
-	name string
+type mockArgs struct {
+	Input string `json:"input"`
 }
 
-func (m *mockTool) Name() string        { return m.name }
-func (m *mockTool) Description() string { return "mock tool: " + m.name }
+type mockResult struct {
+	Output string `json:"output"`
+}
 
-func newMockTool(name string) *mockTool { return &mockTool{name: name} }
+func newMockADKTool(t *testing.T, name, description string) *dtool.Registry {
+	t.Helper()
+
+	reg := dtool.NewRegistry()
+
+	tool, err := functiontool.New[mockArgs, mockResult](
+		functiontool.Config{Name: name, Description: description},
+		func(_ agent.Context, args mockArgs) (mockResult, error) {
+			return mockResult{Output: args.Input}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("creating mock tool %s: %v", name, err)
+	}
+
+	reg.Register(name, tool)
+
+	return reg
+}
+
+func setupTestRegistry(t *testing.T) *dtool.Registry {
+	t.Helper()
+
+	reg := dtool.NewRegistry()
+
+	names := []string{
+		"github.read-pr",
+		"github.read-diff",
+		"github.post-review",
+		"files.read",
+		"files.grep",
+	}
+
+	for _, name := range names {
+		tool, err := functiontool.New[mockArgs, mockResult](
+			functiontool.Config{Name: name, Description: "mock " + name},
+			func(_ agent.Context, args mockArgs) (mockResult, error) {
+				return mockResult{Output: args.Input}, nil
+			},
+		)
+		if err != nil {
+			t.Fatalf("creating mock tool %s: %v", name, err)
+		}
+
+		reg.Register(name, tool)
+	}
+
+	return reg
+}
 
 func TestRegistry_RegisterAndGet(t *testing.T) {
-	reg := tool.NewRegistry()
-	reg.Register("github.read-pr", newMockTool("github.read-pr"))
-	reg.Register("github.read-diff", newMockTool("github.read-diff"))
+	reg := newMockADKTool(t, "github.read-pr", "reads a PR")
 
 	got, ok := reg.Get("github.read-pr")
 	if !ok {
@@ -37,13 +86,10 @@ func TestRegistry_RegisterAndGet(t *testing.T) {
 }
 
 func TestRegistry_Names(t *testing.T) {
-	reg := tool.NewRegistry()
-	reg.Register("files.read", newMockTool("files.read"))
-	reg.Register("github.read-pr", newMockTool("github.read-pr"))
-	reg.Register("github.read-diff", newMockTool("github.read-diff"))
+	reg := setupTestRegistry(t)
 
 	names := reg.Names()
-	expected := []string{"files.read", "github.read-diff", "github.read-pr"}
+	expected := []string{"files.grep", "files.read", "github.post-review", "github.read-diff", "github.read-pr"}
 
 	if len(names) != len(expected) {
 		t.Fatalf("len = %d, want %d", len(names), len(expected))
@@ -57,12 +103,10 @@ func TestRegistry_Names(t *testing.T) {
 }
 
 func TestRegistry_All(t *testing.T) {
-	reg := tool.NewRegistry()
-	reg.Register("a", newMockTool("a"))
-	reg.Register("b", newMockTool("b"))
+	reg := setupTestRegistry(t)
 
 	all := reg.All()
-	if len(all) != 2 {
-		t.Fatalf("len = %d, want 2", len(all))
+	if len(all) != 5 {
+		t.Fatalf("len = %d, want 5", len(all))
 	}
 }

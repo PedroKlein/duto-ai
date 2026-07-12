@@ -3,7 +3,7 @@ package tool_test
 import (
 	"testing"
 
-	"github.com/PedroKlein/duto-ai/internal/tool"
+	dtool "github.com/PedroKlein/duto-ai/internal/tool"
 )
 
 func TestResolveNames(t *testing.T) {
@@ -33,7 +33,7 @@ func TestResolveNames(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tool.ResolveNames(defaults, tt.stepTools)
+			got := dtool.ResolveNames(defaults, tt.stepTools)
 			if len(got) != len(tt.expected) {
 				t.Fatalf("len = %d, want %d: got %v", len(got), len(tt.expected), got)
 			}
@@ -48,12 +48,7 @@ func TestResolveNames(t *testing.T) {
 }
 
 func TestResolve_GlobMatching(t *testing.T) {
-	reg := tool.NewRegistry()
-	reg.Register("github.read-pr", newMockTool("github.read-pr"))
-	reg.Register("github.read-diff", newMockTool("github.read-diff"))
-	reg.Register("github.post-review", newMockTool("github.post-review"))
-	reg.Register("files.read", newMockTool("files.read"))
-	reg.Register("files.grep", newMockTool("files.grep"))
+	reg := setupTestRegistry(t)
 
 	tests := []struct {
 		name     string
@@ -113,11 +108,21 @@ func TestResolve_GlobMatching(t *testing.T) {
 	}
 }
 
-func TestADKToolset(t *testing.T) {
-	tools := []tool.Tool{newMockTool("a"), newMockTool("b")}
-	ts := tool.NewADKToolset(tools)
+func TestNewToolset(t *testing.T) {
+	reg := setupTestRegistry(t)
+	tools := reg.Resolve([]string{"*"})
+	ts := dtool.NewToolset(tools)
 
 	if ts.Name() != "duto" {
 		t.Errorf("name = %q, want %q", ts.Name(), "duto")
+	}
+
+	resolved, err := ts.Tools(nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(resolved) != 5 {
+		t.Errorf("tools len = %d, want 5", len(resolved))
 	}
 }
