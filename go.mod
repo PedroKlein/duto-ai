@@ -3,6 +3,7 @@ module github.com/PedroKlein/duto-ai
 go 1.26.4
 
 require (
+	github.com/PedroKlein/adk-provider-sapaicore v0.4.1
 	google.golang.org/adk/v2 v2.0.0
 	google.golang.org/genai v1.63.0
 	gopkg.in/yaml.v3 v3.0.1
