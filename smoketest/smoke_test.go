@@ -3,15 +3,17 @@
 package smoketest
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/PedroKlein/duto-ai/internal/runtime"
 )
 
 func TestSmoke_MockGitHubSetup(t *testing.T) {
 	mock := setupMockGitHub(t)
-
-	if mock.server == nil {
-		t.Fatal("mock server not created")
-	}
 
 	if mock.server.URL == "" {
 		t.Fatal("mock server has no URL")
@@ -21,25 +23,16 @@ func TestSmoke_MockGitHubSetup(t *testing.T) {
 }
 
 func TestSmoke_FixturesLoad(t *testing.T) {
-	pr := loadFixture(t, "pr.json")
-	if len(pr) == 0 {
-		t.Error("pr.json is empty")
-	}
+	fixtures := []string{"pr.json", "diff.patch", "files.json"}
 
-	diff := loadFixture(t, "diff.patch")
-	if len(diff) == 0 {
-		t.Error("diff.patch is empty")
-	}
-
-	files := loadFixture(t, "files.json")
-	if len(files) == 0 {
-		t.Error("files.json is empty")
+	for _, name := range fixtures {
+		data := loadFixture(t, name)
+		if len(data) == 0 {
+			t.Errorf("%s is empty", name)
+		}
 	}
 }
 
-// TestSmoke_PRReview_FullWorkflow is the full end-to-end smoke test.
-// It requires real AI Core credentials and uses a mock GitHub server.
-// Skip if credentials are not available.
 func TestSmoke_PRReview_FullWorkflow(t *testing.T) {
 	// Required env vars for AI Core
 	envOrSkip(t, "AI_CORE_ENDPOINT")
@@ -48,14 +41,59 @@ func TestSmoke_PRReview_FullWorkflow(t *testing.T) {
 	envOrSkip(t, "AI_CORE_AUTH_URL")
 	envOrSkip(t, "AI_CORE_RESOURCE_GROUP")
 
-	_ = setupMockGitHub(t)
+	// Start mock GitHub server
+	mock := setupMockGitHub(t)
 
-	// Full workflow test would:
-	// 1. Start mock GitHub server
-	// 2. Set GHA env vars
-	// 3. Run the full duto-ai pipeline
-	// 4. Assert GitHub mock received GET and POST requests
-	// This requires the runtime to be wired with actual tool calling,
-	// which depends on ADK tool integration (deferred to post-MVP polish).
-	t.Log("Smoke test infrastructure validated; full E2E requires ADK tool wiring")
+	// Set GHA environment
+	t.Setenv("GITHUB_TOKEN", "test-token")
+	t.Setenv("GITHUB_API_URL", mock.server.URL)
+	t.Setenv("GITHUB_REPOSITORY", "owner/repo")
+	t.Setenv("GITHUB_EVENT_NAME", "pull_request")
+
+	eventPath, err := filepath.Abs("testdata/event.json")
+	if err != nil {
+		t.Fatalf("resolving event path: %v", err)
+	}
+
+	t.Setenv("GITHUB_EVENT_PATH", eventPath)
+
+	// Run the workflow
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	configPath := filepath.Join("testdata", "config.yaml")
+	workflowPath := filepath.Join("testdata", "pr-review.yaml")
+
+	// Verify files exist
+	if _, err := os.Stat(configPath); err != nil {
+		t.Fatalf("config not found: %v", err)
+	}
+
+	if _, err := os.Stat(workflowPath); err != nil {
+		t.Fatalf("workflow not found: %v", err)
+	}
+
+	t.Log("Starting full workflow with real AI Core...")
+
+	runErr := runtime.Run(ctx, configPath, workflowPath,
+		runtime.WithGitHubBaseURL(mock.server.URL),
+	)
+	if runErr != nil {
+		t.Fatalf("runtime.Run: %v", runErr)
+	}
+
+	// Assert: GitHub mock received GET requests (read tools used)
+	if !mock.hasGET() {
+		t.Error("expected at least 1 GET request to mock GitHub (read tools)")
+	}
+
+	// Assert: GitHub mock received POST requests (write tools used)
+	if !mock.hasPOST() {
+		t.Error("expected at least 1 POST request to mock GitHub (write tools)")
+	}
+
+	// Log all requests for debugging
+	for _, req := range mock.getRequests() {
+		t.Logf("  %s %s", req.Method, req.Path)
+	}
 }

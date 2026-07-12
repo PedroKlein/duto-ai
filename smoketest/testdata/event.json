@@ -1,0 +1,14 @@
+{
+  "action": "opened",
+  "number": 42,
+  "pull_request": {
+    "number": 42,
+    "title": "Fix null pointer in config parser",
+    "user": {"login": "alice"},
+    "base": {"ref": "main"},
+    "head": {"ref": "fix/null-pointer"}
+  },
+  "repository": {
+    "full_name": "owner/repo"
+  }
+}

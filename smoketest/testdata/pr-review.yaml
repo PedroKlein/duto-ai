@@ -1,0 +1,30 @@
+name: PR Review Smoke Test
+
+steps:
+  - id: gather
+    model: light
+    tools: [github.read-pr, github.read-diff, github.list-changed-files]
+    prompt: |
+      Read the PR metadata and diff using the available tools.
+      Summarize what this PR changes in 2-3 sentences.
+    output: context
+
+  - id: analyze
+    needs: [gather]
+    model: medium
+    prompt: |
+      Based on this PR context, identify any issues:
+      {{ .Steps.gather.Output }}
+
+      Reply with a brief analysis (1-2 sentences).
+    output: findings
+
+  - id: report
+    needs: [analyze]
+    model: medium
+    tools: [github.post-review]
+    prompt: |
+      Post a brief review comment summarizing:
+      {{ .Steps.analyze.Output }}
+
+      Use the github.post-review tool with event "COMMENT".
