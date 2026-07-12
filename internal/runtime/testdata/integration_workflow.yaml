@@ -1,0 +1,22 @@
+name: Test Workflow
+
+steps:
+  - id: gather
+    model: light
+    prompt: Gather context about the changes
+    output: context
+
+  - id: analyze
+    needs: [gather]
+    model: medium
+    prompt: |
+      Analyze these changes:
+      {{ .Steps.gather.Output }}
+    output: findings
+
+  - id: report
+    needs: [analyze]
+    model: medium
+    prompt: |
+      Report the findings:
+      {{ .Steps.analyze.Output }}

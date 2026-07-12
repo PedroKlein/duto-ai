@@ -1,0 +1,19 @@
+provider:
+  type: ai-core
+  config:
+    endpoint: http://localhost:9999
+    resource_group: test
+
+models:
+  light: test-model
+  medium: test-model
+  heavy: test-model
+
+defaults:
+  model: medium
+  model_config:
+    temperature: 0.2
+    max_tokens: 4096
+  tools: []
+
+context_files: []
