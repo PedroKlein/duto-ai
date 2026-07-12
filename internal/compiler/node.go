@@ -2,70 +2,67 @@ package compiler
 
 import (
 	"fmt"
+	"strings"
 
+	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"
-	"google.golang.org/adk/v2/tool"
+	adktool "google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/workflow"
 	"google.golang.org/genai"
 
 	"github.com/PedroKlein/duto-ai/internal/config"
 	"github.com/PedroKlein/duto-ai/internal/prompt"
-	dtool "github.com/PedroKlein/duto-ai/internal/tool"
+	"github.com/PedroKlein/duto-ai/internal/tool"
 )
 
-// BuildNode creates an ADK AgentNode from a step definition.
-func BuildNode(step config.Step, cfg *config.Config, reg *dtool.Registry, eventCtx *prompt.EventContext) (workflow.Node, error) {
-	// Build system prompt
-	systemPrompt := prompt.BuildSystemPrompt(step, cfg, eventCtx)
+func buildNode(step config.Step, cfg *config.Config, reg *tool.Registry, llm model.LLM, eventCtx *prompt.EventContext) (workflow.Node, agent.Agent, error) {
+	instruction := prompt.BuildSystemPrompt(step, cfg, eventCtx)
 
-	// Resolve tools
-	toolNames := dtool.ResolveNames(cfg.Defaults.Tools, step.Tools)
+	// The step prompt becomes part of the instruction.
+	// In the ADK workflow, predecessor output arrives as node input automatically,
+	// so Go template references ({{ .Steps.X.Output }}) are stripped.
+	if step.Prompt != "" {
+		instruction += "\n\n## Task\n" + stripTemplates(step.Prompt)
+	}
+
+	toolNames := tool.ResolveNames(cfg.Defaults.Tools, step.Tools)
 	resolvedTools := reg.Resolve(toolNames)
 
-	// Build ADK agent config
 	agentCfg := llmagent.Config{
 		Name:        step.ID,
 		Description: fmt.Sprintf("Step %q in workflow", step.ID),
-		Instruction: systemPrompt,
+		Instruction: instruction,
+		Model:       llm,
 		Mode:        llmagent.ModeSingleTurn,
 	}
 
-	// Apply model config
-	gcc := buildGenerateContentConfig(step, cfg)
-	if gcc != nil {
+	if gcc := buildGCC(step, cfg); gcc != nil {
 		agentCfg.GenerateContentConfig = gcc
 	}
 
-	// Set output key for state persistence
 	if step.Output != "" {
 		agentCfg.OutputKey = stateKey(step.ID)
 	}
 
-	// Wire tools as ADK Toolset
 	if len(resolvedTools) > 0 {
-		agentCfg.Toolsets = []tool.Toolset{dtool.NewToolset(resolvedTools)}
+		agentCfg.Toolsets = []adktool.Toolset{tool.NewToolset(resolvedTools)}
 	}
 
 	a, err := llmagent.New(agentCfg)
 	if err != nil {
-		return nil, fmt.Errorf("creating agent for step %q: %w", step.ID, err)
+		return nil, nil, fmt.Errorf("creating agent: %w", err)
 	}
 
 	node, err := workflow.NewAgentNode(a, workflow.NodeConfig{})
 	if err != nil {
-		return nil, fmt.Errorf("creating node for step %q: %w", step.ID, err)
+		return nil, nil, fmt.Errorf("creating node: %w", err)
 	}
 
-	return node, nil
+	return node, a, nil
 }
 
-// SetModel sets the model on the agent config. Called by the runtime after provider creation.
-func SetModel(agentCfg *llmagent.Config, llm model.LLM) {
-	agentCfg.Model = llm
-}
-
-func buildGenerateContentConfig(step config.Step, cfg *config.Config) *genai.GenerateContentConfig {
+func buildGCC(step config.Step, cfg *config.Config) *genai.GenerateContentConfig {
 	mc := mergeModelConfig(step, cfg)
 
 	if mc.Temperature == nil && mc.MaxTokens == nil {
@@ -89,12 +86,10 @@ func buildGenerateContentConfig(step config.Step, cfg *config.Config) *genai.Gen
 func mergeModelConfig(step config.Step, cfg *config.Config) config.ModelConfig {
 	var result config.ModelConfig
 
-	// Start with defaults
 	if cfg != nil {
 		result = cfg.Defaults.ModelConfig
 	}
 
-	// Override with step-level config
 	if step.ModelConfig.Temperature != nil {
 		result.Temperature = step.ModelConfig.Temperature
 	}
@@ -108,4 +103,36 @@ func mergeModelConfig(step config.Step, cfg *config.Config) config.ModelConfig {
 
 func stateKey(stepID string) string {
 	return "steps." + stepID + ".output"
+}
+
+// stripTemplates removes Go template expressions like {{ .Steps.X.Output }}
+// since ADK's workflow engine passes output between nodes automatically.
+func stripTemplates(s string) string {
+	var result strings.Builder
+
+	for {
+		idx := strings.Index(s, "{{")
+		if idx == -1 {
+			result.WriteString(s)
+
+			break
+		}
+
+		result.WriteString(s[:idx])
+
+		end := strings.Index(s[idx:], "}}")
+		if end == -1 {
+			result.WriteString(s[idx:])
+
+			break
+		}
+
+		// Replace template expression with a placeholder that tells the LLM
+		// to use the input it received from the previous step.
+		result.WriteString("[previous step output]")
+
+		s = s[idx+end+2:]
+	}
+
+	return strings.TrimSpace(result.String())
 }

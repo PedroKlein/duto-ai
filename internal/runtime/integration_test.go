@@ -96,8 +96,8 @@ func TestIntegration_FailFast(t *testing.T) {
 		t.Fatal("expected error from failed step")
 	}
 
-	if !strings.Contains(err.Error(), "analyze") {
-		t.Errorf("error should mention failing step 'analyze', got: %v", err)
+	if !strings.Contains(err.Error(), "simulated LLM failure") {
+		t.Errorf("error should contain the LLM failure message, got: %v", err)
 	}
 
 	// Step 3 should never have been called

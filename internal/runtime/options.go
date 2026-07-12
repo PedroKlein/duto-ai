@@ -26,3 +26,12 @@ func WithGitHubBaseURL(url string) Option {
 		o.GitHubBaseURL = url
 	}
 }
+
+func applyOptions(opts []Option) *Options {
+	var options Options
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	return &options
+}
