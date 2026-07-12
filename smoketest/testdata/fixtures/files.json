@@ -1,0 +1,11 @@
+[
+  {
+    "sha": "def456",
+    "filename": "internal/config/config.go",
+    "status": "modified",
+    "additions": 3,
+    "deletions": 0,
+    "changes": 3,
+    "patch": "@@ -42,6 +42,9 @@ func LoadConfig(path string) (*Config, error) {\n \n \texpanded := expandEnvVars(string(data))\n \n+\tif expanded == \"\" {\n+\t\treturn nil, fmt.Errorf(\"config file %s is empty after expansion\", path)\n+\t}\n+\n \tvar cfg Config"
+  }
+]

@@ -1,0 +1,14 @@
+{
+  "number": 42,
+  "title": "Fix null pointer in config parser",
+  "body": "This PR fixes a null pointer dereference when config.yaml has empty provider section.",
+  "state": "open",
+  "user": {"login": "alice"},
+  "base": {"ref": "main", "sha": "abc123"},
+  "head": {"ref": "fix/null-pointer", "sha": "def456"},
+  "labels": [{"name": "bug"}],
+  "mergeable": true,
+  "additions": 15,
+  "deletions": 3,
+  "changed_files": 2
+}

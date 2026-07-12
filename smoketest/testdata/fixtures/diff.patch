@@ -1,0 +1,15 @@
+diff --git a/internal/config/config.go b/internal/config/config.go
+index abc123..def456 100644
+--- a/internal/config/config.go
++++ b/internal/config/config.go
+@@ -42,6 +42,9 @@ func LoadConfig(path string) (*Config, error) {
+ 
+ 	expanded := expandEnvVars(string(data))
+ 
++	if expanded == "" {
++		return nil, fmt.Errorf("config file %s is empty after expansion", path)
++	}
++
+ 	var cfg Config
+ 	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
+ 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
