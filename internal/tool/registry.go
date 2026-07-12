@@ -7,9 +7,10 @@ import (
 )
 
 // Tool is a minimal interface for a tool in the registry.
-// It wraps ADK's tool interface with a name getter.
+// Implementations should also satisfy the ADK tool.Tool interface.
 type Tool interface {
 	Name() string
+	Description() string
 }
 
 // Registry is a catalog of all available tools.

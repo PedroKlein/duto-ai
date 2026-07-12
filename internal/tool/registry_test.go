@@ -11,7 +11,8 @@ type mockTool struct {
 	name string
 }
 
-func (m *mockTool) Name() string { return m.name }
+func (m *mockTool) Name() string        { return m.name }
+func (m *mockTool) Description() string { return "mock tool: " + m.name }
 
 func newMockTool(name string) *mockTool { return &mockTool{name: name} }
 

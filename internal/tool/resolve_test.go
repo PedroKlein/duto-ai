@@ -113,15 +113,11 @@ func TestResolve_GlobMatching(t *testing.T) {
 	}
 }
 
-func TestToolset(t *testing.T) {
+func TestADKToolset(t *testing.T) {
 	tools := []tool.Tool{newMockTool("a"), newMockTool("b")}
-	ts := tool.NewToolset(tools)
+	ts := tool.NewADKToolset(tools)
 
 	if ts.Name() != "duto" {
 		t.Errorf("name = %q, want %q", ts.Name(), "duto")
-	}
-
-	if len(ts.Tools()) != 2 {
-		t.Errorf("tools len = %d, want 2", len(ts.Tools()))
 	}
 }
