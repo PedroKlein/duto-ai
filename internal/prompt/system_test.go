@@ -8,116 +8,77 @@ import (
 	"github.com/PedroKlein/duto-ai/internal/prompt"
 )
 
-func TestBuildSystemPrompt_BasicStep(t *testing.T) {
-	step := config.Step{
-		ID:     "analyze",
-		Output: "findings",
-	}
-
-	cfg := &config.Config{
-		Defaults: config.Defaults{
-			Tools: []string{"github.read-pr", "files.read"},
+func TestBuildSystemPrompt(t *testing.T) {
+	tests := []struct {
+		name     string
+		step     config.Step
+		cfg      *config.Config
+		eventCtx *prompt.EventContext
+		contains []string
+		excludes []string
+	}{
+		{
+			name: "basic step includes ID and output key",
+			step: config.Step{ID: "analyze", Output: "findings"},
+			cfg: &config.Config{
+				Defaults: config.Defaults{Tools: []string{"github.read-pr", "files.read"}},
+			},
+			contains: []string{"analyze", "findings", "github.read-pr"},
+		},
+		{
+			name: "with event context",
+			step: config.Step{ID: "test"},
+			cfg:  &config.Config{},
+			eventCtx: &prompt.EventContext{
+				Repo: "owner/repo", PRNumber: 42, Author: "alice", EventName: "pull_request",
+			},
+			contains: []string{"owner/repo", "PR #42", "alice"},
+		},
+		{
+			name:     "with user system field",
+			step:     config.Step{ID: "test", System: "You are an expert code reviewer."},
+			cfg:      &config.Config{},
+			contains: []string{"expert code reviewer"},
+		},
+		{
+			name: "step tools additive on defaults",
+			step: config.Step{
+				ID:    "report",
+				Tools: &[]string{"github.post-review"},
+			},
+			cfg: &config.Config{
+				Defaults: config.Defaults{Tools: []string{"files.read"}},
+			},
+			contains: []string{"files.read", "github.post-review"},
+		},
+		{
+			name: "empty tools override removes all",
+			step: config.Step{
+				ID:    "quiet",
+				Tools: &[]string{},
+			},
+			cfg: &config.Config{
+				Defaults: config.Defaults{Tools: []string{"files.read"}},
+			},
+			excludes: []string{"Available tools"},
 		},
 	}
 
-	result := prompt.BuildSystemPrompt(step, cfg, nil)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := prompt.BuildSystemPrompt(tt.step, tt.cfg, tt.eventCtx)
 
-	if !strings.Contains(result, "analyze") {
-		t.Error("should contain step ID")
-	}
+			for _, want := range tt.contains {
+				if !strings.Contains(result, want) {
+					t.Errorf("expected %q in result, got:\n%s", want, result)
+				}
+			}
 
-	if !strings.Contains(result, "findings") {
-		t.Error("should contain output key")
-	}
-
-	if !strings.Contains(result, "github.read-pr") {
-		t.Error("should list default tools")
-	}
-}
-
-func TestBuildSystemPrompt_WithEventContext(t *testing.T) {
-	step := config.Step{ID: "test"}
-	cfg := &config.Config{}
-
-	eventCtx := &prompt.EventContext{
-		Repo:      "owner/repo",
-		PRNumber:  42,
-		Author:    "alice",
-		EventName: "pull_request",
-	}
-
-	result := prompt.BuildSystemPrompt(step, cfg, eventCtx)
-
-	if !strings.Contains(result, "owner/repo") {
-		t.Error("should contain repo")
-	}
-
-	if !strings.Contains(result, "PR #42") {
-		t.Error("should contain PR number")
-	}
-
-	if !strings.Contains(result, "alice") {
-		t.Error("should contain author")
-	}
-}
-
-func TestBuildSystemPrompt_WithSystemField(t *testing.T) {
-	step := config.Step{
-		ID:     "test",
-		System: "You are an expert code reviewer.",
-	}
-
-	cfg := &config.Config{}
-
-	result := prompt.BuildSystemPrompt(step, cfg, nil)
-
-	if !strings.Contains(result, "expert code reviewer") {
-		t.Error("should contain user system field")
-	}
-}
-
-func TestBuildSystemPrompt_ToolResolution(t *testing.T) {
-	tools := []string{"github.post-review"}
-
-	step := config.Step{
-		ID:    "report",
-		Tools: &tools,
-	}
-
-	cfg := &config.Config{
-		Defaults: config.Defaults{
-			Tools: []string{"files.read"},
-		},
-	}
-
-	result := prompt.BuildSystemPrompt(step, cfg, nil)
-
-	if !strings.Contains(result, "files.read") {
-		t.Error("should contain default tools")
-	}
-
-	if !strings.Contains(result, "github.post-review") {
-		t.Error("should contain step tools")
-	}
-}
-
-func TestBuildSystemPrompt_EmptyToolsOverride(t *testing.T) {
-	emptyTools := []string{}
-
-	step := config.Step{
-		ID:    "quiet",
-		Tools: &emptyTools,
-	}
-
-	cfg := &config.Config{
-		Defaults: config.Defaults{
-			Tools: []string{"files.read"},
-		},
-	}
-
-	result := prompt.BuildSystemPrompt(step, cfg, nil)
-
-	if strings.Contains(result, "Available tools") {
-		t.Error("should not list tools when explicitly empty")
+			for _, notWant := range tt.excludes {
+				if strings.Contains(result, notWant) {
+					t.Errorf("expected %q NOT in result, got:\n%s", notWant, result)
+				}
+			}
+		})
 	}
 }

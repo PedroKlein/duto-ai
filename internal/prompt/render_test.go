@@ -8,32 +8,58 @@ import (
 	"github.com/PedroKlein/duto-ai/internal/prompt"
 )
 
-func TestRenderPrompt_InlineTemplate(t *testing.T) {
-	data := prompt.TemplateData{
-		Steps: map[string]prompt.StepOutput{
-			"gather": {Output: "found 3 issues"},
+func TestRenderPrompt(t *testing.T) {
+	tests := []struct {
+		name     string
+		tmpl     string
+		data     prompt.TemplateData
+		expected string
+		wantErr  bool
+	}{
+		{
+			name: "inline template with step output",
+			tmpl: "Analyze: {{ .Steps.gather.Output }}",
+			data: prompt.TemplateData{
+				Steps: map[string]prompt.StepOutput{
+					"gather": {Output: "found 3 issues"},
+				},
+			},
+			expected: "Analyze: found 3 issues",
+		},
+		{
+			name:     "plain text no template",
+			tmpl:     "plain text prompt",
+			data:     prompt.TemplateData{},
+			expected: "plain text prompt",
+		},
+		{
+			name:    "invalid template syntax",
+			tmpl:    "{{ .Invalid",
+			data:    prompt.TemplateData{},
+			wantErr: true,
 		},
 	}
 
-	result, err := prompt.RenderPrompt("Analyze: {{ .Steps.gather.Output }}", data)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := prompt.RenderPrompt(tt.tmpl, tt.data)
 
-	expected := "Analyze: found 3 issues"
-	if result != expected {
-		t.Errorf("got %q, want %q", result, expected)
-	}
-}
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
 
-func TestRenderPrompt_NoTemplate(t *testing.T) {
-	result, err := prompt.RenderPrompt("plain text prompt", prompt.TemplateData{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+				return
+			}
 
-	if result != "plain text prompt" {
-		t.Errorf("got %q, want %q", result, "plain text prompt")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if result != tt.expected {
+				t.Errorf("got %q, want %q", result, tt.expected)
+			}
+		})
 	}
 }
 
@@ -59,12 +85,5 @@ func TestRenderPrompt_FileTemplate(t *testing.T) {
 
 	if result != "Review: LGTM" {
 		t.Errorf("got %q, want %q", result, "Review: LGTM")
-	}
-}
-
-func TestRenderPrompt_InvalidTemplate(t *testing.T) {
-	_, err := prompt.RenderPrompt("{{ .Invalid", prompt.TemplateData{})
-	if err == nil {
-		t.Fatal("expected error for invalid template")
 	}
 }
