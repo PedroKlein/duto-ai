@@ -8,43 +8,45 @@ It serves as the implementation reference for building duto-ai.
 ```
 cmd/
   duto-ai/
-    main.go                    # CLI entry (cobra or plain flags: run, version)
+    main.go                    # CLI entry (run, version)
 
 internal/
   config/                      # Parse config.yaml + workflow YAML
     config.go                  # Global config struct + loader
     workflow.go                # Workflow definition struct + loader
     step.go                    # Step schema types
-    resolve.go                 # Env var expansion (${ENV_VAR}), model alias resolution
+    resolve.go                 # Model alias resolution
     validate.go                # Schema validation (required fields, circular deps)
 
-  compiler/                    # YAML steps → ADK v2 workflow.Edge graph
-    compiler.go                # Main Compile(workflow, config) → *workflow.Workflow
-    dag.go                     # Topological sort, dependency resolution, parallel detection
-    node.go                    # Step → AgentNode builder (wires model, tools, prompt)
+  compiler/                    # YAML steps → ADK v2 workflowagent.New
+    compiler.go                # Compile(workflow, config, registry, llm) → agent.Agent
+    node.go                    # Step → AgentNode builder (wires model, tools, instruction)
 
-  prompt/                      # System prompt assembly + Go template rendering
-    render.go                  # Go text/template execution ({{ .Steps.X.output }})
-    system.go                  # System prompt builder (metadata + event ctx + context files + skills)
+  prompt/                      # System prompt assembly + event context
+    system.go                  # Instruction builder (metadata + event ctx + context files + skills)
     context.go                 # GHA event context extraction (env vars → structured data)
 
   tool/                        # Tool registry + whitelist resolution
     registry.go                # Global catalog registration (name → tool.Tool)
     resolve.go                 # Glob matching (github.*, github.read-*), merge defaults + step tools
+    adk_toolset.go             # ADK Toolset adapter for resolved tools
     github/                    # github.* tool implementations
-      read.go                  # read-pr, read-diff, list-changed-files, read-comments, etc.
-      write.go                 # post-review, post-comment, add-labels, etc.
+      tools.go                 # functiontool.New wrappers + RegisterAll
+      read.go                  # read-pr, read-diff, list-changed-files
+      write.go                 # post-review, post-comment, add-labels
       client.go                # Shared GitHub HTTP client (GITHUB_TOKEN auth)
-    files/                     # files.* implementations
-      read.go                  # files.read
-    git/                       # git.* implementations (post-MVP)
 
   provider/                    # Provider factory from config
-    factory.go                 # config.provider → model.LLM (dispatches to sapaicore, openai, etc.)
+    factory.go                 # config.provider → model.LLM (dispatches to sapaicore)
 
-  runtime/                     # Orchestrates the full run: load → compile → execute → output
-    run.go                     # Top-level Run(configPath, workflowPath) error
-    event.go                   # GHA event context (PR number, repo, etc. from env)
+  runtime/                     # Orchestrates the full run: load → compile → execute
+    run.go                     # Run(configPath, workflowPath) → compiler.Compile + runner.Run
+    options.go                 # Functional options for DI (WithLLM, WithGitHubBaseURL)
+
+  testing/
+    mockllm/                   # Reusable mock model.LLM for tests
+
+smoketest/                     # E2E tests with real AI Core + mock GitHub
 ```
 
 ### Design Principles
@@ -63,36 +65,34 @@ internal/
 
 | YAML Concept | ADK v2 Concept |
 |---|---|
-| Step | `AgentNode` wrapping an `llmagent.New()` |
-| `needs: [gather]` | `workflow.Edge{From: gatherNode, To: thisNode, Route: nil}` |
-| Step with no `needs` | `workflow.Edge{From: workflow.Start, To: thisNode}` |
-| `output` field | Written to `session.State["steps.<id>.output"]` |
-| Parallel steps (no mutual deps) | Multiple edges from same predecessor → ADK scheduler runs concurrently |
+| Step | `AgentNode` wrapping an `llmagent.New(ModeSingleTurn)` |
+| `needs: [gather]` | `EdgeBuilder.Add(gatherNode, thisNode)` |
+| Step with no `needs` | `EdgeBuilder.Add(workflow.Start, thisNode)` |
+| Multiple `needs` | `JoinNode` fan-in barrier + edge to step node |
+| `output` field | `OutputKey` → session state |
+| Parallel steps (no mutual deps) | Multiple edges from `Start` → ADK scheduler runs concurrently |
+| Entire workflow | `workflowagent.New` → `agent.Agent` (root for runner) |
 
 ### Compilation Algorithm
 
 1. Parse steps → validate (unique IDs, no cycles via topological sort)
-2. For each step: create `llmagent.New()` with resolved model, tools, instruction
-3. For each step: create edges from predecessors (or `workflow.Start` if no `needs`)
-4. Build `workflow.New(workflowName, edges)`
-5. Run via ADK `runner.Run()`
+2. For each step: create `llmagent.New(ModeSingleTurn)` with instruction, model, tools
+3. Wrap each agent in `workflow.NewAgentNode`
+4. Build edges via `workflow.NewEdgeBuilder` (handles fan-in with JoinNodes)
+5. Create `workflowagent.New(edges, subAgents)` → returns `agent.Agent`
+6. Caller runs via `runner.New(agent) + runner.Run()` (single call)
 
 ### Output Passing Between Steps
 
-**Decision: Session state (Option A)**
+**Decision: ADK native workflow output passing**
 
-Each step writes its output to `session.State["steps.<id>.output"]`. Downstream steps
-access predecessor outputs via Go template rendering: `{{ .Steps.gather.output }}`.
+ADK's workflow engine passes each node's output as the input to successor nodes
+automatically. Sequential steps receive predecessor output as their `input` parameter.
+JoinNodes aggregate multiple predecessors into a `map[string]any`.
 
-A `FunctionNode` adapter sits between steps to:
-1. Read predecessor outputs from session state
-2. Render the Go template with those values
-3. Feed the rendered prompt to the downstream `AgentNode`
-
-**Why session state over native node input chaining:**
-- Multiple predecessors (fan-in) are natural — read N state keys
-- Template rendering happens at prompt-assembly time, not graph-wiring time
-- Cleaner separation: compiler builds graph shape, prompt renderer handles data flow
+The step's `prompt` field becomes part of the `Instruction` (system prompt).
+Go template expressions (`{{ .Steps.X.Output }}`) are stripped at compile time
+and replaced with `[previous step output]` since ADK delivers the actual data.
 
 ---
 
