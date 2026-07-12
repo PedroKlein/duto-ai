@@ -48,18 +48,19 @@ name: PR Code Review
 steps:
   - id: gather
     model: light
-    tools: [github.read-pr, git.log, git.blame]
-    prompt: prompts/gather-context.md
+    tools: [github.read-pr, github.read-diff, github.list-changed-files]
+    prompt: |
+      Read the PR metadata and diff using the available tools.
+      Summarize what this PR changes.
     output: context
 
   - id: analyze
     needs: [gather]
     model: heavy
-    tools: [files.read]
     skills: [security-analysis]
     prompt: |
       Analyze the PR changes for security, performance, and convention issues.
-      Context: {{ .Steps.gather.output }}
+      Identify specific problems with line references.
     output: findings
 
   - id: report
@@ -67,10 +68,10 @@ steps:
     model: medium
     tools: [github.post-review, github.post-comment, github.add-labels]
     prompt: |
-      Post findings as inline review comments.
-      Findings: {{ .Steps.analyze.output }}
+      Post findings as inline review comments using the github.post-review tool.
 ```
 
+Each step receives its predecessor's output automatically via ADK's workflow engine.
 Steps with no mutual `needs:` run in **parallel** automatically.
 
 ## Global Config
