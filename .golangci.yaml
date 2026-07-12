@@ -1,0 +1,199 @@
+version: "2"
+
+run:
+  concurrency: 4
+  timeout: 5m
+  tests: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 50
+
+linters:
+  enable:
+    # correctness
+    - govet
+    - staticcheck
+    - unused
+    - errcheck
+    - errorlint
+    - nilerr
+    - ineffassign
+    - forcetypeassert
+    - copyloopvar
+    - durationcheck
+    - reassign
+    - predeclared
+    - unparam
+    - wrapcheck
+    # style
+    - gocritic
+    - revive
+    - misspell
+    - unconvert
+    - errname
+    - asciicheck
+    - dupword
+    - whitespace
+    - nakedret
+    - funcorder
+    - wsl_v5
+    # complexity
+    - gocyclo
+    - gocognit
+    - nestif
+    - funlen
+    - dupl
+    # performance
+    - perfsprint
+    - prealloc
+    - goconst
+    - usestdlibvars
+    # security
+    - gosec
+    - bidichk
+    # testing
+    - thelper
+    - usetesting
+    - testpackage
+    # modernization
+    - modernize
+    - intrange
+    - exhaustive
+    - nolintlint
+    # library-specific
+    - err113
+    - iface
+
+  disable:
+    - lll
+    - cyclop
+    - godot
+    - varnamelen
+    - exhaustruct
+    - gochecknoglobals
+    - mnd
+    - paralleltest
+    - depguard
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gocritic
+          - funlen
+          - dupl
+          - prealloc
+          - goconst
+          - unparam
+          - wrapcheck
+          - err113
+          - gosec
+          - forcetypeassert
+          - gocyclo
+    paths:
+      - vendor$
+      - third_party$
+
+  settings:
+    dupl:
+      threshold: 120
+    errcheck:
+      check-type-assertions: true
+    exhaustive:
+      default-signifies-exhaustive: true
+    funlen:
+      lines: 150
+      statements: 100
+    goconst:
+      min-len: 3
+      min-occurrences: 4
+    gocyclo:
+      min-complexity: 15
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+    gosec:
+      excludes:
+        - G115
+    nakedret:
+      max-func-lines: 30
+    nestif:
+      min-complexity: 5
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    wsl_v5:
+      allow-first-in-block: true
+      allow-whole-block: false
+      branch-max-lines: 2
+    revive:
+      severity: warning
+      enable-default-rules: true
+      rules:
+        - name: dot-imports
+          severity: error
+        - name: empty-block
+          severity: warning
+        - name: context-as-argument
+          severity: error
+        - name: error-return
+          severity: error
+        - name: bare-return
+          severity: warning
+        - name: exported
+          severity: warning
+          disabled: true
+        - name: receiver-naming
+          severity: error
+        - name: superfluous-else
+          severity: warning
+        - name: unreachable-code
+          severity: error
+        - name: unexported-return
+          severity: warning
+          disabled: true
+        - name: indent-error-flow
+          severity: warning
+        - name: var-declaration
+          severity: warning
+        - name: range
+          severity: warning
+        - name: package-comments
+          severity: warning
+          disabled: true
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        - hugeParam
+        - rangeValCopy
+        - ifElseChain
+    errorlint:
+      errorf: true
+      errorf-multi: true
+      asserts: true
+      comparison: true
+    staticcheck:
+      checks:
+        - "all"
+        - "-ST1000"
+        - "-ST1003"
+    misspell:
+      locale: US
+
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+  settings:
+    gofumpt:
+      extra-rules: true
+  exclusions:
+    generated: lax
+    paths:
+      - vendor$

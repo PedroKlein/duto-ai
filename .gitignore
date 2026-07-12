@@ -1,4 +1,42 @@
-/.a5c
-/.env
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+coverage.html
+
+# Go workspace
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local env
+.env
+.env.local
+
+# Babysitter
+.a5c/
+
+# Pi
+.pi-subagents/
+
+# Project-specific
 /CONTEXT.md
 /.pi/extensions
