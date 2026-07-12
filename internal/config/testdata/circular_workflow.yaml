@@ -1,0 +1,14 @@
+name: Circular Deps
+
+steps:
+  - id: a
+    needs: [c]
+    prompt: step a
+
+  - id: b
+    needs: [a]
+    prompt: step b
+
+  - id: c
+    needs: [b]
+    prompt: step c

@@ -1,0 +1,28 @@
+name: PR Code Review
+
+steps:
+  - id: gather
+    model: light
+    tools: [github.read-pr, github.read-diff]
+    prompt: Gather PR context
+    output: context
+
+  - id: analyze
+    needs: [gather]
+    model: heavy
+    tools: [files.read]
+    skills: [security-analysis]
+    model_config:
+      temperature: 0.1
+    prompt: |
+      Analyze the PR changes:
+      {{ .Steps.gather.output }}
+    output: findings
+
+  - id: report
+    needs: [analyze]
+    model: medium
+    tools: [github.post-review, github.post-comment]
+    prompt: |
+      Post findings as inline review comments.
+      {{ .Steps.analyze.output }}

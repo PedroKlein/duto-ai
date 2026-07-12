@@ -1,0 +1,12 @@
+provider:
+  type: ai-core
+  config:
+    resource_group: ${TEST_RESOURCE_GROUP}
+    endpoint: ${TEST_ENDPOINT}
+
+models:
+  default: ${TEST_MODEL}
+
+defaults:
+  model: default
+  tools: []

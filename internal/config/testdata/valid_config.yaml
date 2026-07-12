@@ -1,0 +1,24 @@
+provider:
+  type: ai-core
+  config:
+    resource_group: default
+    endpoint: https://example.com
+
+models:
+  light: gpt-4.1-mini
+  medium: gpt-4.1
+  heavy: claude-sonnet-4
+
+defaults:
+  model: medium
+  model_config:
+    temperature: 0.2
+    max_tokens: 4096
+  tools:
+    - github.read-diff
+    - github.read-pr
+    - files.read
+
+context_files:
+  - AGENTS.md
+  - CONTEXT.md
