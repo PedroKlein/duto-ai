@@ -98,7 +98,8 @@ func buildNode(step config.Step, cfg *config.Config, reg *tool.Registry, resolve
 	}
 
 	nodeCfg := workflow.NodeConfig{
-		Timeout: ResolveTimeout(step),
+		Timeout:     ResolveTimeout(step),
+		RetryConfig: BuildRetryConfig(step),
 	}
 
 	node, err := workflow.NewAgentNode(a, nodeCfg)
