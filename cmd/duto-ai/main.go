@@ -57,6 +57,7 @@ func runCommand(args []string) error {
 	dryRun := fs.Bool("dry-run", false, "validate and show execution plan without calling LLM")
 	outputFormat := fs.String("output-format", "text", "output format (text/json/markdown)")
 	outputFile := fs.String("output-file", "", "write output to file (in addition to stdout)")
+	verbose := fs.Bool("verbose", false, "enable debug-level output for troubleshooting")
 
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parsing flags: %w", err)
@@ -69,6 +70,10 @@ func runCommand(args []string) error {
 	workflowPath := fs.Arg(0)
 
 	logging.Setup(*logLevel)
+
+	if *verbose {
+		logging.Level.Set(slog.LevelDebug)
+	}
 
 	// Override env vars from CLI flags for local testing.
 	setEnvOverrides(*repo, *pr, *event)

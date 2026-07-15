@@ -16,6 +16,7 @@ import (
 
 	"github.com/PedroKlein/duto-ai/internal/compiler"
 	"github.com/PedroKlein/duto-ai/internal/config"
+	"github.com/PedroKlein/duto-ai/internal/logging"
 	"github.com/PedroKlein/duto-ai/internal/prompt"
 	"github.com/PedroKlein/duto-ai/internal/provider"
 	"github.com/PedroKlein/duto-ai/internal/tool"
@@ -151,6 +152,8 @@ func recordEvent(result *WorkflowResult, event *session.Event) {
 	if step.Status == StepStatusPending {
 		step.Status = StepStatusRunning
 		step.StartedAt = time.Now()
+
+		logging.GHAGroup("Step: " + stepID)
 	}
 
 	output := extractOutput(event)
@@ -158,6 +161,8 @@ func recordEvent(result *WorkflowResult, event *session.Event) {
 		step.Output = output
 		step.Status = StepStatusCompleted
 		step.Duration = time.Since(step.StartedAt)
+		logging.GHAStepTiming(stepID, step.Duration)
+		logging.GHAEndGroup()
 	}
 }
 
@@ -176,6 +181,9 @@ func recordStepFailure(result *WorkflowResult, err error) {
 		result.Steps[i].Error = err
 		result.Steps[i].ErrorMsg = err.Error()
 		result.Steps[i].Duration = now.Sub(result.Steps[i].StartedAt)
+
+		logging.GHAError(fmt.Sprintf("Step %q failed: %s", result.Steps[i].StepID, err.Error()))
+		logging.GHAEndGroup()
 
 		break
 	}
