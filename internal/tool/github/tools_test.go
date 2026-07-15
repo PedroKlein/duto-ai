@@ -1,7 +1,14 @@
 package github_test
 
 import (
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/tool/toolconfirmation"
 
 	dtool "github.com/PedroKlein/duto-ai/internal/tool"
 	gh "github.com/PedroKlein/duto-ai/internal/tool/github"
@@ -50,4 +57,127 @@ func TestRegisterAll_ToolsHaveDescriptions(t *testing.T) {
 			t.Errorf("tool %q has empty description", name)
 		}
 	}
+}
+
+func TestToolExecution_ListChangedFiles(t *testing.T) {
+	// Set up mock GitHub server
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `[{"filename":"main.go","status":"modified","additions":5,"deletions":2,"patch":"@@ -1,3 +1,8 @@"}]`)
+	}))
+	defer srv.Close()
+
+	reg := dtool.NewRegistry()
+	client := gh.NewClient("token", srv.URL)
+
+	if err := gh.RegisterAll(reg, client); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	tool, ok := reg.Get("github.list-changed-files")
+	if !ok {
+		t.Fatal("tool not found")
+	}
+
+	// Execute through ADK's tool.Run interface — this catches the map[string]any conversion bug
+	type runner interface {
+		Run(ctx agent.Context, args any) (map[string]any, error)
+	}
+
+	r, ok := tool.(runner)
+	if !ok {
+		t.Fatal("tool does not implement Run")
+	}
+
+	ctx := &toolTestContext{StrictContextMock: agent.StrictContextMock{Ctx: t.Context()}}
+
+	result, err := r.Run(ctx, map[string]any{
+		"owner":  "PedroKlein",
+		"repo":   "duto-test",
+		"number": float64(1), // JSON numbers are float64
+	})
+	if err != nil {
+		t.Fatalf("tool.Run: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	// Result should have a "files" key with the array
+	files, ok := result["files"]
+	if !ok {
+		t.Fatalf("result missing 'files' key, got: %v", result)
+	}
+
+	filesList, ok := files.([]any)
+	if !ok {
+		t.Fatalf("files is not []any, got %T: %v", files, files)
+	}
+
+	if len(filesList) != 1 {
+		t.Errorf("expected 1 file, got %d", len(filesList))
+	}
+}
+
+func TestToolExecution_PostReview(t *testing.T) {
+	var received []byte
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	reg := dtool.NewRegistry()
+	client := gh.NewClient("token", srv.URL)
+
+	if err := gh.RegisterAll(reg, client); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	tool, ok := reg.Get("github.post-review")
+	if !ok {
+		t.Fatal("tool not found")
+	}
+
+	type runner interface {
+		Run(ctx agent.Context, args any) (map[string]any, error)
+	}
+
+	r, ok := tool.(runner)
+	if !ok {
+		t.Fatal("tool does not implement Run")
+	}
+
+	ctx := &toolTestContext{StrictContextMock: agent.StrictContextMock{Ctx: t.Context()}}
+
+	result, err := r.Run(ctx, map[string]any{
+		"owner":  "PedroKlein",
+		"repo":   "duto-test",
+		"number": float64(1),
+		"body":   "LGTM",
+		"event":  "COMMENT",
+	})
+	if err != nil {
+		t.Fatalf("tool.Run: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	if len(received) == 0 {
+		t.Error("expected POST body to be sent")
+	}
+}
+
+// toolTestContext overrides ToolConfirmation to return nil (no HITL required).
+type toolTestContext struct {
+	agent.StrictContextMock
+}
+
+func (c *toolTestContext) ToolConfirmation() *toolconfirmation.ToolConfirmation {
+	return nil
 }

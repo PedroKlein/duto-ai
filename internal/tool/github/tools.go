@@ -62,6 +62,11 @@ type DiffResult struct {
 	Diff string `json:"diff"`
 }
 
+// ChangedFilesResult wraps the list of changed files (ADK requires struct output).
+type ChangedFilesResult struct {
+	Files []ChangedFile `json:"files"`
+}
+
 // OKResult is returned by write tools on success.
 type OKResult struct {
 	Success bool `json:"success"`
@@ -123,13 +128,18 @@ func newReadDiffTool(client *Client) (tool.Tool, error) {
 }
 
 func newListChangedFilesTool(client *Client) (tool.Tool, error) {
-	return functiontool.New[ListChangedFilesArgs, []ChangedFile](
+	return functiontool.New[ListChangedFilesArgs, *ChangedFilesResult](
 		functiontool.Config{
 			Name:        "github.list-changed-files",
 			Description: "List files changed in a pull request with additions, deletions, and patch info",
 		},
-		func(ctx agent.Context, args ListChangedFilesArgs) ([]ChangedFile, error) {
-			return client.ListChangedFiles(ctx, ReadPRInput(args))
+		func(ctx agent.Context, args ListChangedFilesArgs) (*ChangedFilesResult, error) {
+			files, err := client.ListChangedFiles(ctx, ReadPRInput(args))
+			if err != nil {
+				return nil, err
+			}
+
+			return &ChangedFilesResult{Files: files}, nil
 		},
 	)
 }
