@@ -121,6 +121,9 @@ func buildContextFilesLayer(files []string) string {
 	return sb.String()
 }
 
+// skillsRegistry is the global auto-discovered skills registry.
+var skillsRegistry = NewSkillsRegistry()
+
 func buildSkillsLayer(skills []string) string {
 	if len(skills) == 0 {
 		return ""
@@ -131,15 +134,11 @@ func buildSkillsLayer(skills []string) string {
 	sb.WriteString("## Skills\n")
 
 	for _, skill := range skills {
-		content, err := os.ReadFile(skill) //nolint:gosec // user-provided skill paths
-		if err != nil {
-			// Try .github/ai-workflows/skills/<name>.md
-			altPath := fmt.Sprintf(".github/ai-workflows/skills/%s.md", skill)
+		path := skillsRegistry.Resolve(skill)
 
-			content, err = os.ReadFile(altPath) //nolint:gosec // skill resolution path
-			if err != nil {
-				continue
-			}
+		content, err := os.ReadFile(path) //nolint:gosec // resolved skill path
+		if err != nil {
+			continue
 		}
 
 		fmt.Fprintf(&sb, "\n### %s\n%s\n", skill, strings.TrimSpace(string(content)))
