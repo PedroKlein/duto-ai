@@ -3,6 +3,9 @@ package compiler
 import (
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 
 	"google.golang.org/adk/v2/agent"
@@ -21,10 +24,16 @@ func buildNode(step config.Step, cfg *config.Config, reg *tool.Registry, resolve
 	instruction := prompt.BuildSystemPrompt(step, cfg, eventCtx)
 
 	// The step prompt becomes part of the instruction.
-	// In the ADK workflow, predecessor output arrives as node input automatically,
+	// If the prompt is a file path (ends with .md), load the file content.
+	// ADK passes predecessor output between nodes automatically,
 	// so Go template references ({{ .Steps.X.Output }}) are stripped.
 	if step.Prompt != "" {
-		instruction += "\n\n## Task\n" + stripTemplates(step.Prompt)
+		promptContent, err := ResolvePrompt(step.Prompt)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving prompt for step %q: %w", step.ID, err)
+		}
+
+		instruction += "\n\n## Task\n" + stripTemplates(promptContent)
 	}
 
 	// Resolve the model for this step
@@ -131,6 +140,34 @@ func mergeModelConfig(step config.Step, cfg *config.Config) config.ModelConfig {
 
 func stateKey(stepID string) string {
 	return "steps." + stepID + ".output"
+}
+
+// promptFileExtensions lists file extensions that trigger file loading for prompts.
+var promptFileExtensions = []string{".md", ".txt"}
+
+// ResolvePrompt returns the prompt content. If the value looks like a file
+// path (ends with .md or .txt), the file is read and its content returned.
+// Otherwise, the string is returned as-is.
+func ResolvePrompt(raw string) (string, error) {
+	if !isPromptFile(raw) {
+		return raw, nil
+	}
+
+	path := filepath.Clean(raw)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading prompt file %q: %w", path, err)
+	}
+
+	return strings.TrimSpace(string(data)), nil
+}
+
+// isPromptFile checks whether a prompt value is a file path to load.
+func isPromptFile(raw string) bool {
+	ext := strings.ToLower(filepath.Ext(raw))
+
+	return slices.Contains(promptFileExtensions, ext)
 }
 
 // stripTemplates removes Go template expressions like {{ .Steps.X.Output }}
