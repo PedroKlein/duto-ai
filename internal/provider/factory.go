@@ -4,13 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"regexp"
 
 	"google.golang.org/adk/v2/model"
 
 	"github.com/PedroKlein/adk-provider-sapaicore/sapaicore"
 	"github.com/PedroKlein/duto-ai/internal/config"
+	"github.com/PedroKlein/duto-ai/internal/envutil"
 )
 
 // ErrUnknownProviderType is returned when the provider type is not supported.
@@ -62,48 +61,29 @@ func NewLLM(ctx context.Context, cfg config.Provider, modelName string) (model.L
 func buildAICoreOptions(cfg config.Provider) []sapaicore.Option {
 	var opts []sapaicore.Option
 
-	// Endpoint
-	if endpoint := expandEnv(cfg.Config["endpoint"]); endpoint != "" {
+	if endpoint := envutil.Expand(cfg.Config["endpoint"]); endpoint != "" {
 		opts = append(opts, sapaicore.WithEndpoint(endpoint))
 	}
 
-	// Resource group
-	if rg := expandEnv(cfg.Config["resource_group"]); rg != "" {
+	if rg := envutil.Expand(cfg.Config["resource_group"]); rg != "" {
 		opts = append(opts, sapaicore.WithResourceGroup(rg))
 	}
 
-	// Auth credentials
-	clientID := expandEnv(cfg.Config["client_id"])
-	clientSecret := expandEnv(cfg.Config["client_secret"])
-	authURL := expandEnv(cfg.Config["auth_url"])
+	clientID := envutil.Expand(cfg.Config["client_id"])
+	clientSecret := envutil.Expand(cfg.Config["client_secret"])
+	authURL := envutil.Expand(cfg.Config["auth_url"])
 
 	if clientID != "" && clientSecret != "" && authURL != "" {
 		opts = append(opts, sapaicore.WithAuth(clientID, clientSecret, authURL))
 	}
 
-	// Deployment ID (foundation mode)
-	if depID := expandEnv(cfg.Config["deployment_id"]); depID != "" {
+	if depID := envutil.Expand(cfg.Config["deployment_id"]); depID != "" {
 		opts = append(opts, sapaicore.WithDeploymentID(depID))
 	}
 
-	// Default to orchestration mode
 	if cfg.Config["deployment_id"] == "" {
 		opts = append(opts, sapaicore.WithOrchestration())
 	}
 
 	return opts
-}
-
-var envVarPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
-
-func expandEnv(s string) string {
-	if s == "" {
-		return ""
-	}
-
-	return envVarPattern.ReplaceAllStringFunc(s, func(match string) string {
-		key := match[2 : len(match)-1]
-
-		return os.Getenv(key)
-	})
 }

@@ -3,10 +3,10 @@ package config
 import (
 	"fmt"
 	"os"
-	"regexp"
-	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/PedroKlein/duto-ai/internal/envutil"
 )
 
 // Provider holds the LLM provider configuration.
@@ -44,7 +44,7 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
 
-	expanded := expandEnvVars(string(data))
+	expanded := envutil.Expand(string(data))
 
 	var cfg Config
 	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
@@ -52,14 +52,4 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
-}
-
-var envVarPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
-
-func expandEnvVars(s string) string {
-	return envVarPattern.ReplaceAllStringFunc(s, func(match string) string {
-		key := strings.TrimSuffix(strings.TrimPrefix(match, "${"), "}")
-
-		return os.Getenv(key)
-	})
 }
