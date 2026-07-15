@@ -49,3 +49,29 @@ jobs:
       - uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12.2
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Build binary
+        run: go build -o duto-ai ./cmd/duto-ai
+
+      - name: Dry-run validation
+        run: |
+          ./duto-ai run --dry-run \
+            --config internal/runtime/testdata/integration_config.yaml \
+            internal/runtime/testdata/integration_workflow.yaml
+
+      - name: Verify --output-format flag
+        run: |
+          ./duto-ai version
+          ./duto-ai run --dry-run \
+            --config internal/runtime/testdata/integration_config.yaml \
+            --output-format json \
+            internal/runtime/testdata/integration_workflow.yaml
