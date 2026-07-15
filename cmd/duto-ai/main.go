@@ -5,9 +5,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 
+	"github.com/PedroKlein/duto-ai/internal/logging"
 	"github.com/PedroKlein/duto-ai/internal/runtime"
 )
 
@@ -31,7 +32,8 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		if err := runCommand(os.Args[2:]); err != nil {
-			log.Fatalf("Error: %v", err)
+			slog.Error("fatal", "error", err)
+			os.Exit(1)
 		}
 	case "version":
 		fmt.Printf("duto-ai %s (%s)\n", version, commit)
@@ -45,7 +47,7 @@ func runCommand(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 
 	configPath := fs.String("config", defaultConfigPath, "path to config.yaml")
-	logLevel := fs.String("log-level", "info", "log level (debug/info/error)")
+	logLevel := fs.String("log-level", "info", "log level (debug/info/warn/error)")
 
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parsing flags: %w", err)
@@ -57,15 +59,7 @@ func runCommand(args []string) error {
 
 	workflowPath := fs.Arg(0)
 
-	// Configure log level
-	switch *logLevel {
-	case "error":
-		log.SetOutput(os.Stderr)
-	case "debug":
-		log.SetFlags(log.LstdFlags | log.Lshortfile)
-	default:
-		// info level - default
-	}
+	logging.Setup(*logLevel)
 
 	ctx := context.Background()
 

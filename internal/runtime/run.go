@@ -4,7 +4,7 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 
 	"google.golang.org/adk/v2/agent"
@@ -42,7 +42,7 @@ func Run(ctx context.Context, configPath, workflowPath string, opts ...Option) e
 		return fmt.Errorf("validating workflow: %w", vErr)
 	}
 
-	log.Printf("Running workflow %q with %d steps", wf.Name, len(wf.Steps))
+	slog.Info("running workflow", "name", wf.Name, "steps", len(wf.Steps))
 
 	resolver, err := buildModelResolver(ctx, cfg, options)
 	if err != nil {
@@ -65,7 +65,7 @@ func Run(ctx context.Context, configPath, workflowPath string, opts ...Option) e
 		return err
 	}
 
-	log.Printf("Workflow %q completed successfully", wf.Name)
+	slog.Info("workflow completed", "name", wf.Name)
 
 	return nil
 }

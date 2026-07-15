@@ -2,7 +2,7 @@ package compiler
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -214,8 +214,11 @@ func logBeforeModel(stepID string) llmagent.BeforeModelCallback {
 			}
 		}
 
-		log.Printf("[%s] LLM call: %d tool declarations, %d content messages",
-			stepID, toolCount, len(req.Contents))
+		slog.Debug("LLM call",
+			"step", stepID,
+			"tools", toolCount,
+			"messages", len(req.Contents),
+		)
 
 		if toolCount > 0 {
 			var names []string
@@ -226,7 +229,7 @@ func logBeforeModel(stepID string) llmagent.BeforeModelCallback {
 				}
 			}
 
-			log.Printf("[%s] Tools: %s", stepID, strings.Join(names, ", "))
+			slog.Debug("available tools", "step", stepID, "names", strings.Join(names, ", "))
 		}
 
 		return nil, nil //nolint:nilnil // proceed with normal LLM call
@@ -235,7 +238,7 @@ func logBeforeModel(stepID string) llmagent.BeforeModelCallback {
 
 func logBeforeTool(stepID string) llmagent.BeforeToolCallback {
 	return func(_ agent.Context, t adktool.Tool, args map[string]any) (map[string]any, error) {
-		log.Printf("[%s] Tool call: %s args=%v", stepID, t.Name(), args)
+		slog.Debug("tool call", "step", stepID, "tool", t.Name(), "args", args)
 
 		return nil, nil //nolint:nilnil // proceed with tool execution
 	}
@@ -243,7 +246,7 @@ func logBeforeTool(stepID string) llmagent.BeforeToolCallback {
 
 func logToolError(stepID string) llmagent.OnToolErrorCallback {
 	return func(_ agent.Context, t adktool.Tool, args map[string]any, err error) (map[string]any, error) {
-		log.Printf("[%s] Tool ERROR: %s err=%v args=%v", stepID, t.Name(), err, args)
+		slog.Error("tool error", "step", stepID, "tool", t.Name(), "error", err, "args", args)
 
 		return nil, nil //nolint:nilnil // let ADK handle the error normally
 	}
