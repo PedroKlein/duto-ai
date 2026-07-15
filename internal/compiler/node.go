@@ -45,13 +45,18 @@ func buildNode(step config.Step, cfg *config.Config, reg *tool.Registry, resolve
 	toolNames := tool.ResolveNames(cfg.Defaults.Tools, step.Tools)
 	resolvedTools := reg.Resolve(toolNames)
 
+	maxIter := ResolveMaxIterations(step)
+
 	agentCfg := llmagent.Config{
-		Name:                 step.ID,
-		Description:          fmt.Sprintf("Step %q in workflow", step.ID),
-		Instruction:          instruction,
-		Model:                llm,
-		Mode:                 llmagent.ModeSingleTurn,
-		BeforeModelCallbacks: []llmagent.BeforeModelCallback{logBeforeModel(step.ID)},
+		Name:        step.ID,
+		Description: fmt.Sprintf("Step %q in workflow", step.ID),
+		Instruction: instruction,
+		Model:       llm,
+		Mode:        llmagent.ModeSingleTurn,
+		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
+			NewIterationLimiter(step.ID, maxIter),
+			logBeforeModel(step.ID),
+		},
 		BeforeToolCallbacks:  []llmagent.BeforeToolCallback{logBeforeTool(step.ID)},
 		OnToolErrorCallbacks: []llmagent.OnToolErrorCallback{logToolError(step.ID)},
 	}
@@ -73,7 +78,11 @@ func buildNode(step config.Step, cfg *config.Config, reg *tool.Registry, resolve
 		return nil, nil, fmt.Errorf("creating agent: %w", err)
 	}
 
-	node, err := workflow.NewAgentNode(a, workflow.NodeConfig{})
+	nodeCfg := workflow.NodeConfig{
+		Timeout: ResolveTimeout(step),
+	}
+
+	node, err := workflow.NewAgentNode(a, nodeCfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating node: %w", err)
 	}

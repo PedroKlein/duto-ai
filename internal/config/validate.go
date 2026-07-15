@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 var (
@@ -12,6 +13,8 @@ var (
 	ErrDuplicateStepID    = errors.New("duplicate step ID")
 	ErrUnknownDependency  = errors.New("unknown dependency")
 	ErrCircularDependency = errors.New("circular dependency detected")
+	ErrInvalidTimeout     = errors.New("invalid timeout duration")
+	ErrInvalidIterations  = errors.New("max_iterations must be positive")
 )
 
 // ValidateWorkflow checks a workflow for common errors:
@@ -46,6 +49,16 @@ func ValidateWorkflow(wf *Workflow) error {
 			if !ids[need] {
 				return fmt.Errorf("step %q references %q: %w", step.ID, need, ErrUnknownDependency)
 			}
+		}
+
+		if step.Timeout != "" {
+			if _, err := time.ParseDuration(step.Timeout); err != nil {
+				return fmt.Errorf("step %q: %w: %q", step.ID, ErrInvalidTimeout, step.Timeout)
+			}
+		}
+
+		if step.MaxIterations < 0 {
+			return fmt.Errorf("step %q: %w: %d", step.ID, ErrInvalidIterations, step.MaxIterations)
 		}
 	}
 

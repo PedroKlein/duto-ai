@@ -130,3 +130,67 @@ func TestTopologicalSort_Circular(t *testing.T) {
 		t.Fatal("expected error for circular dependency")
 	}
 }
+
+func TestValidateWorkflow_InvalidTimeout(t *testing.T) {
+	wf := &config.Workflow{
+		Name: "test",
+		Steps: []config.Step{
+			{ID: "a", Prompt: "x", Timeout: "not-a-duration"},
+		},
+	}
+
+	err := config.ValidateWorkflow(wf)
+	if err == nil {
+		t.Fatal("expected error for invalid timeout")
+	}
+
+	if !strings.Contains(err.Error(), "invalid timeout") {
+		t.Errorf("error = %q, want to contain 'invalid timeout'", err.Error())
+	}
+}
+
+func TestValidateWorkflow_ValidTimeout(t *testing.T) {
+	wf := &config.Workflow{
+		Name: "test",
+		Steps: []config.Step{
+			{ID: "a", Prompt: "x", Timeout: "60s"},
+		},
+	}
+
+	err := config.ValidateWorkflow(wf)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateWorkflow_NegativeMaxIterations(t *testing.T) {
+	wf := &config.Workflow{
+		Name: "test",
+		Steps: []config.Step{
+			{ID: "a", Prompt: "x", MaxIterations: -5},
+		},
+	}
+
+	err := config.ValidateWorkflow(wf)
+	if err == nil {
+		t.Fatal("expected error for negative max_iterations")
+	}
+
+	if !strings.Contains(err.Error(), "max_iterations must be positive") {
+		t.Errorf("error = %q, want to contain 'max_iterations must be positive'", err.Error())
+	}
+}
+
+func TestValidateWorkflow_ValidMaxIterations(t *testing.T) {
+	wf := &config.Workflow{
+		Name: "test",
+		Steps: []config.Step{
+			{ID: "a", Prompt: "x", MaxIterations: 10},
+		},
+	}
+
+	err := config.ValidateWorkflow(wf)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}

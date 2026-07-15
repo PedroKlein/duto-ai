@@ -16,8 +16,9 @@ var ErrNoMoreResponses = errors.New("mock: no more responses configured")
 
 // Response defines what the mock returns for a single GenerateContent call.
 type Response struct {
-	Text  string
-	Error error
+	Text    string
+	Content *genai.Content // If set, takes priority over Text.
+	Error   error
 }
 
 // MockLLM implements model.LLM for testing.
@@ -74,9 +75,17 @@ func (m *MockLLM) GenerateContent(_ context.Context, req *model.LLMRequest, _ bo
 		}
 
 		yield(&model.LLMResponse{
-			Content: genai.NewContentFromText(resp.Text, "model"),
+			Content: responseContent(resp),
 		}, nil)
 	}
+}
+
+func responseContent(resp Response) *genai.Content {
+	if resp.Content != nil {
+		return resp.Content
+	}
+
+	return genai.NewContentFromText(resp.Text, "model")
 }
 
 // Calls returns all recorded calls.
