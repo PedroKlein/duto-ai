@@ -18,6 +18,18 @@ inputs:
     description: "Log level: debug, info, or error"
     required: false
     default: "info"
+  output-format:
+    description: "Output format: text, json, or markdown"
+    required: false
+    default: ""
+  output-file:
+    description: "Write formatted output to this file path"
+    required: false
+    default: ""
+  verbose:
+    description: "Enable debug-level output for troubleshooting"
+    required: false
+    default: "false"
   version:
     description: "duto-ai version to use (default: latest)"
     required: false
@@ -57,7 +69,22 @@ runs:
     - name: Run workflow
       shell: bash
       run: |
-        duto-ai run \
-          --config "${{ inputs.config }}" \
-          --log-level "${{ inputs.log-level }}" \
-          "${{ inputs.workflow }}"
+        ARGS=("run")
+        ARGS+=("--config" "${{ inputs.config }}")
+        ARGS+=("--log-level" "${{ inputs.log-level }}")
+
+        if [ "${{ inputs.verbose }}" = "true" ]; then
+          ARGS+=("--verbose")
+        fi
+
+        if [ -n "${{ inputs.output-format }}" ]; then
+          ARGS+=("--output-format" "${{ inputs.output-format }}")
+        fi
+
+        if [ -n "${{ inputs.output-file }}" ]; then
+          ARGS+=("--output-file" "${{ inputs.output-file }}")
+        fi
+
+        ARGS+=("${{ inputs.workflow }}")
+
+        duto-ai "${ARGS[@]}"
