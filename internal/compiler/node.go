@@ -25,15 +25,25 @@ func buildNode(step config.Step, cfg *config.Config, reg *tool.Registry, resolve
 
 	// The step prompt becomes part of the instruction.
 	// If the prompt is a file path (ends with .md), load the file content.
-	// ADK passes predecessor output between nodes automatically,
-	// so Go template references ({{ .Steps.X.Output }}) are stripped.
+	// Go templates are rendered for event context and env vars.
+	// References to {{ .Steps.X.Output }} are replaced with a placeholder
+	// since ADK handles inter-step output passing natively.
 	if step.Prompt != "" {
 		promptContent, err := ResolvePrompt(step.Prompt)
 		if err != nil {
 			return nil, nil, fmt.Errorf("resolving prompt for step %q: %w", step.ID, err)
 		}
 
-		instruction += "\n\n## Task\n" + stripTemplates(promptContent)
+		// Strip step-output templates before rendering (they're not in template data).
+		promptContent = stripStepOutputRefs(promptContent)
+
+		// Render remaining templates (event context, env vars).
+		promptContent, err = prompt.RenderTemplate(promptContent, eventCtx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("rendering prompt template for step %q: %w", step.ID, err)
+		}
+
+		instruction += "\n\n## Task\n" + promptContent
 	}
 
 	// Resolve the model for this step
@@ -170,9 +180,10 @@ func isPromptFile(raw string) bool {
 	return slices.Contains(promptFileExtensions, ext)
 }
 
-// stripTemplates removes Go template expressions like {{ .Steps.X.Output }}
-// since ADK's workflow engine passes output between nodes automatically.
-func stripTemplates(s string) string {
+// stripStepOutputRefs replaces {{ .Steps.X.Output }} template expressions with
+// a placeholder hint, since ADK's workflow engine passes output between nodes
+// automatically. Other template expressions are left intact for rendering.
+func stripStepOutputRefs(s string) string {
 	var result strings.Builder
 
 	for {
@@ -183,18 +194,22 @@ func stripTemplates(s string) string {
 			break
 		}
 
-		result.WriteString(s[:idx])
-
 		end := strings.Index(s[idx:], "}}")
 		if end == -1 {
-			result.WriteString(s[idx:])
+			result.WriteString(s)
 
 			break
 		}
 
-		// Replace template expression with a placeholder that tells the LLM
-		// to use the input it received from the previous step.
-		result.WriteString("[previous step output]")
+		expr := s[idx : idx+end+2]
+
+		// Only strip .Steps.* references.
+		if strings.Contains(expr, ".Steps.") {
+			result.WriteString(s[:idx])
+			result.WriteString("[previous step output]")
+		} else {
+			result.WriteString(s[:idx+end+2])
+		}
 
 		s = s[idx+end+2:]
 	}
