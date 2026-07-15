@@ -13,6 +13,12 @@ import (
 
 const defaultConfigPath = ".github/ai-workflows/config.yaml"
 
+// Set by goreleaser ldflags.
+var (
+	version = "dev"
+	commit  = "none"
+)
+
 // ErrMissingWorkflowPath is returned when no workflow file is specified.
 var ErrMissingWorkflowPath = errors.New("workflow YAML path is required")
 
@@ -28,7 +34,7 @@ func main() {
 			log.Fatalf("Error: %v", err)
 		}
 	case "version":
-		fmt.Println("duto-ai v0.1.0-dev")
+		fmt.Printf("duto-ai %s (%s)\n", version, commit)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", os.Args[1])
 		os.Exit(1)
