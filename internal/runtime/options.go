@@ -8,6 +8,8 @@ type Options struct {
 	LLM model.LLM
 	// GitHubBaseURL overrides the GitHub API URL (for httptest).
 	GitHubBaseURL string
+	// RepoRoot overrides the repository root directory for sandboxed tools.
+	RepoRoot string
 }
 
 // Option is a functional option for Run.
@@ -24,6 +26,13 @@ func WithLLM(llm model.LLM) Option {
 func WithGitHubBaseURL(url string) Option {
 	return func(o *Options) {
 		o.GitHubBaseURL = url
+	}
+}
+
+// WithRepoRoot overrides the repository root directory.
+func WithRepoRoot(root string) Option {
+	return func(o *Options) {
+		o.RepoRoot = root
 	}
 }
 

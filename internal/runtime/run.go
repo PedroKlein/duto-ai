@@ -18,7 +18,10 @@ import (
 	"github.com/PedroKlein/duto-ai/internal/prompt"
 	"github.com/PedroKlein/duto-ai/internal/provider"
 	"github.com/PedroKlein/duto-ai/internal/tool"
+	"github.com/PedroKlein/duto-ai/internal/tool/files"
+	"github.com/PedroKlein/duto-ai/internal/tool/git"
 	gh "github.com/PedroKlein/duto-ai/internal/tool/github"
+	"github.com/PedroKlein/duto-ai/internal/tool/shell"
 )
 
 // Run executes a duto-ai workflow end-to-end using ADK's native workflow engine.
@@ -155,6 +158,17 @@ func buildModelResolver(ctx context.Context, cfg *config.Config, options *Option
 func buildRegistry(options *Options) (*tool.Registry, error) {
 	reg := tool.NewRegistry()
 
+	repoRoot := options.RepoRoot
+	if repoRoot == "" {
+		var err error
+
+		repoRoot, err = os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("getting working directory: %w", err)
+		}
+	}
+
+	// Register GitHub tools.
 	token := os.Getenv("GITHUB_TOKEN")
 	baseURL := options.GitHubBaseURL
 
@@ -169,7 +183,22 @@ func buildRegistry(options *Options) (*tool.Registry, error) {
 	client := gh.NewClient(token, baseURL)
 
 	if err := gh.RegisterAll(reg, client); err != nil {
-		return nil, fmt.Errorf("registering tools: %w", err)
+		return nil, fmt.Errorf("registering github tools: %w", err)
+	}
+
+	// Register file tools.
+	if err := files.RegisterAll(reg, repoRoot); err != nil {
+		return nil, fmt.Errorf("registering files tools: %w", err)
+	}
+
+	// Register git tools.
+	if err := git.RegisterAll(reg, repoRoot); err != nil {
+		return nil, fmt.Errorf("registering git tools: %w", err)
+	}
+
+	// Register shell tool.
+	if err := shell.RegisterAll(reg, repoRoot); err != nil {
+		return nil, fmt.Errorf("registering shell tools: %w", err)
 	}
 
 	return reg, nil
