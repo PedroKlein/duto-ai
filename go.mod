@@ -3,7 +3,7 @@ module github.com/PedroKlein/duto-ai
 go 1.26.4
 
 require (
-	github.com/PedroKlein/adk-provider-sapaicore v0.4.1
+	github.com/PedroKlein/adk-provider-sapaicore v0.4.2
 	google.golang.org/adk/v2 v2.0.0
 	google.golang.org/genai v1.63.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -42,5 +42,3 @@ require (
 	rsc.io/omap v1.2.0 // indirect
 	rsc.io/ordered v1.1.1 // indirect
 )
-
-replace github.com/PedroKlein/adk-provider-sapaicore => /Users/i572543/Dev/github.com/PedroKlein/adk-provider-sapaicore/main
