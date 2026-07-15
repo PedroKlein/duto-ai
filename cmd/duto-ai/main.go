@@ -55,6 +55,8 @@ func runCommand(args []string) error {
 	pr := fs.Int("pr", 0, "pull request number — overrides GITHUB_PR_NUMBER")
 	event := fs.String("event", "", "path to event.json — overrides GITHUB_EVENT_PATH")
 	dryRun := fs.Bool("dry-run", false, "validate and show execution plan without calling LLM")
+	outputFormat := fs.String("output-format", "text", "output format (text/json/markdown)")
+	outputFile := fs.String("output-file", "", "write output to file (in addition to stdout)")
 
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parsing flags: %w", err)
@@ -75,10 +77,24 @@ func runCommand(args []string) error {
 		return dryRunWorkflow(*configPath, workflowPath)
 	}
 
+	format, err := runtime.ParseOutputFormat(*outputFormat)
+	if err != nil {
+		return fmt.Errorf("parsing output format: %w", err)
+	}
+
 	ctx := context.Background()
 
-	if err := runtime.Run(ctx, *configPath, workflowPath); err != nil {
-		return fmt.Errorf("running workflow: %w", err)
+	result, runErr := runtime.RunWithResult(ctx, *configPath, workflowPath)
+
+	// Write output even on failure (partial results are useful).
+	if result != nil {
+		if wErr := writeOutput(result, format, *outputFile); wErr != nil {
+			slog.Error("writing output", "error", wErr)
+		}
+	}
+
+	if runErr != nil {
+		return fmt.Errorf("running workflow: %w", runErr)
 	}
 
 	return nil
@@ -141,4 +157,56 @@ func dryRunWorkflow(configPath, workflowPath string) error {
 	fmt.Println("\n✓ Validation passed — ready to run.")
 
 	return nil
+}
+
+func writeOutput(result *runtime.WorkflowResult, format runtime.OutputFormat, outputFile string) error {
+	formatted, err := result.FormatOutput(format)
+	if err != nil {
+		return fmt.Errorf("formatting output: %w", err)
+	}
+
+	// Write to stdout for JSON (machine-parseable), stderr for text.
+	switch format {
+	case runtime.OutputFormatJSON:
+		_, _ = fmt.Fprintln(os.Stdout, formatted)
+	case runtime.OutputFormatText:
+		_, _ = fmt.Fprintln(os.Stderr, formatted)
+	case runtime.OutputFormatMarkdown:
+		_, _ = fmt.Fprintln(os.Stdout, formatted)
+	}
+
+	// Write to file if requested.
+	if outputFile != "" {
+		if wErr := os.WriteFile(outputFile, []byte(formatted+"\n"), 0o644); wErr != nil { //nolint:gosec // output file permissions are intentionally world-readable
+			return fmt.Errorf("writing output file %q: %w", outputFile, wErr)
+		}
+	}
+
+	// Set GitHub step outputs when running in GHA.
+	writeGitHubOutput(result)
+
+	return nil
+}
+
+func writeGitHubOutput(result *runtime.WorkflowResult) {
+	ghOutput := os.Getenv("GITHUB_OUTPUT")
+	if ghOutput == "" {
+		return
+	}
+
+	f, err := os.OpenFile(ghOutput, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644) //nolint:gosec // GITHUB_OUTPUT path is provided by GHA runner
+	if err != nil {
+		slog.Debug("opening GITHUB_OUTPUT", "error", err)
+
+		return
+	}
+	defer f.Close() //nolint:errcheck // best-effort write to GHA output
+
+	_, _ = fmt.Fprintf(f, "status=%s\n", result.Status)
+	_, _ = fmt.Fprintf(f, "workflow=%s\n", result.WorkflowName)
+	_, _ = fmt.Fprintf(f, "duration_ms=%d\n", result.Duration.Milliseconds())
+
+	if failed := result.Failed(); failed != nil {
+		_, _ = fmt.Fprintf(f, "failed_step=%s\n", failed.StepID)
+	}
 }

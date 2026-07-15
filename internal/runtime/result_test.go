@@ -1,6 +1,7 @@
 package runtime_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -152,5 +153,110 @@ func TestWorkflowResult_FormatSummary_TruncatesLongOutput(t *testing.T) {
 	// The 300-char output should be truncated with "…"
 	if !strings.Contains(summary, "…") {
 		t.Errorf("FormatSummary() should truncate long output with ellipsis, got:\n%s", summary)
+	}
+}
+
+func TestParseOutputFormat(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    runtime.OutputFormat
+		wantErr bool
+	}{
+		{"", runtime.OutputFormatText, false},
+		{"text", runtime.OutputFormatText, false},
+		{"json", runtime.OutputFormatJSON, false},
+		{"markdown", runtime.OutputFormatMarkdown, false},
+		{"md", runtime.OutputFormatMarkdown, false},
+		{"JSON", runtime.OutputFormatJSON, false},
+		{"invalid", runtime.OutputFormatText, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := runtime.ParseOutputFormat(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseOutputFormat(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+
+			if got != tt.want {
+				t.Errorf("ParseOutputFormat(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWorkflowResult_FormatJSON(t *testing.T) {
+	r := &runtime.WorkflowResult{
+		WorkflowName: "test-wf",
+		Status:       runtime.StepStatusCompleted,
+		Duration:     2 * time.Second,
+		Steps: []runtime.StepResult{
+			{
+				StepID:   "step1",
+				Status:   runtime.StepStatusCompleted,
+				Output:   "done",
+				Duration: 1 * time.Second,
+			},
+		},
+	}
+
+	got, err := r.FormatJSON()
+	if err != nil {
+		t.Fatalf("FormatJSON() error = %v", err)
+	}
+
+	// Verify it's valid JSON.
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatalf("FormatJSON() produced invalid JSON: %v", err)
+	}
+
+	if parsed["workflow_name"] != "test-wf" {
+		t.Errorf("workflow_name = %v, want test-wf", parsed["workflow_name"])
+	}
+
+	if parsed["status"] != "completed" {
+		t.Errorf("status = %v, want completed", parsed["status"])
+	}
+}
+
+func TestWorkflowResult_FormatMarkdown(t *testing.T) {
+	r := &runtime.WorkflowResult{
+		WorkflowName: "review-pr",
+		Status:       runtime.StepStatusFailed,
+		Duration:     3 * time.Second,
+		Steps: []runtime.StepResult{
+			{
+				StepID:   "gather",
+				Status:   runtime.StepStatusCompleted,
+				Output:   "data collected",
+				Duration: 1 * time.Second,
+			},
+			{
+				StepID:   "analyze",
+				Status:   runtime.StepStatusFailed,
+				ErrorMsg: "timeout",
+				Duration: 2 * time.Second,
+			},
+		},
+	}
+
+	md := r.FormatMarkdown()
+
+	expectations := []string{
+		"## Workflow: review-pr",
+		"| gather",
+		"| analyze",
+		"### Error",
+		"timeout",
+		"### Step Outputs",
+		"<details>",
+		"data collected",
+	}
+
+	for _, want := range expectations {
+		if !strings.Contains(md, want) {
+			t.Errorf("FormatMarkdown() missing %q in:\n%s", want, md)
+		}
 	}
 }

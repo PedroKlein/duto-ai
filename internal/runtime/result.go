@@ -1,10 +1,15 @@
 package runtime
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
+
+// ErrUnknownFormat is returned when an unsupported output format is requested.
+var ErrUnknownFormat = errors.New("unknown output format")
 
 // StepStatus represents the outcome of a workflow step execution.
 type StepStatus int
@@ -135,4 +140,127 @@ func truncateOutput(s string, limit int) string {
 	}
 
 	return s[:limit] + "…"
+}
+
+// OutputFormat specifies the structured output format for workflow results.
+type OutputFormat int
+
+const (
+	OutputFormatText     OutputFormat = iota // human-readable text
+	OutputFormatJSON                         // machine-parseable JSON
+	OutputFormatMarkdown                     // markdown for PR comments
+)
+
+// ParseOutputFormat converts a string flag value to an OutputFormat.
+func ParseOutputFormat(s string) (OutputFormat, error) {
+	switch strings.ToLower(s) {
+	case "text", "":
+		return OutputFormatText, nil
+	case "json":
+		return OutputFormatJSON, nil
+	case "markdown", "md":
+		return OutputFormatMarkdown, nil
+	default:
+		return OutputFormatText, fmt.Errorf("%w: %q (use text, json, or markdown)", ErrUnknownFormat, s)
+	}
+}
+
+// FormatJSON produces a JSON representation of the workflow result.
+func (r *WorkflowResult) FormatJSON() (string, error) {
+	data, err := json.MarshalIndent(r.toJSON(), "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshaling result: %w", err)
+	}
+
+	return string(data), nil
+}
+
+// FormatMarkdown produces a markdown summary suitable for PR comments.
+func (r *WorkflowResult) FormatMarkdown() string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "## Workflow: %s\n\n", r.WorkflowName)
+	fmt.Fprintf(&b, "**Status:** %s | **Duration:** %s\n\n", r.Status, r.Duration.Truncate(time.Millisecond))
+
+	b.WriteString("| Step | Status | Duration |\n")
+	b.WriteString("|------|--------|----------|\n")
+
+	for _, step := range r.Steps {
+		fmt.Fprintf(&b, "| %s | %s %s | %s |\n",
+			step.StepID,
+			statusIcon(step.Status),
+			step.Status,
+			step.Duration.Truncate(time.Millisecond),
+		)
+	}
+
+	if failed := r.Failed(); failed != nil {
+		fmt.Fprintf(&b, "\n### Error\n\n```\n%s\n```\n", failed.ErrorMsg)
+	}
+
+	completed := r.CompletedSteps()
+	if len(completed) > 0 {
+		b.WriteString("\n### Step Outputs\n\n")
+
+		for _, step := range completed {
+			if step.Output == "" {
+				continue
+			}
+
+			fmt.Fprintf(&b, "<details>\n<summary>%s</summary>\n\n%s\n\n</details>\n\n", step.StepID, step.Output)
+		}
+	}
+
+	return b.String()
+}
+
+// FormatOutput returns the formatted output for the given format.
+func (r *WorkflowResult) FormatOutput(format OutputFormat) (string, error) {
+	switch format {
+	case OutputFormatJSON:
+		return r.FormatJSON()
+	case OutputFormatMarkdown:
+		return r.FormatMarkdown(), nil
+	case OutputFormatText:
+		return r.FormatSummary(), nil
+	default:
+		return r.FormatSummary(), nil
+	}
+}
+
+// jsonResult is the JSON-serializable form of WorkflowResult.
+type jsonResult struct {
+	WorkflowName string     `json:"workflow_name"`
+	Status       string     `json:"status"`
+	DurationMS   int64      `json:"duration_ms"`
+	Steps        []jsonStep `json:"steps"`
+}
+
+type jsonStep struct {
+	StepID     string `json:"step_id"`
+	Status     string `json:"status"`
+	DurationMS int64  `json:"duration_ms"`
+	Output     string `json:"output,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+func (r *WorkflowResult) toJSON() jsonResult {
+	steps := make([]jsonStep, 0, len(r.Steps))
+
+	for _, s := range r.Steps {
+		steps = append(steps, jsonStep{
+			StepID:     s.StepID,
+			Status:     s.Status.String(),
+			DurationMS: s.Duration.Milliseconds(),
+			Output:     s.Output,
+			Error:      s.ErrorMsg,
+		})
+	}
+
+	return jsonResult{
+		WorkflowName: r.WorkflowName,
+		Status:       r.Status.String(),
+		DurationMS:   r.Duration.Milliseconds(),
+		Steps:        steps,
+	}
 }
