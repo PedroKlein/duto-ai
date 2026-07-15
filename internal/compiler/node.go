@@ -52,6 +52,8 @@ func buildNode(step config.Step, cfg *config.Config, reg *tool.Registry, resolve
 		Model:                llm,
 		Mode:                 llmagent.ModeSingleTurn,
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{logBeforeModel(step.ID)},
+		BeforeToolCallbacks:  []llmagent.BeforeToolCallback{logBeforeTool(step.ID)},
+		OnToolErrorCallbacks: []llmagent.OnToolErrorCallback{logToolError(step.ID)},
 	}
 
 	if gcc := buildGCC(step, cfg); gcc != nil {
@@ -182,5 +184,21 @@ func logBeforeModel(stepID string) llmagent.BeforeModelCallback {
 		}
 
 		return nil, nil //nolint:nilnil // proceed with normal LLM call
+	}
+}
+
+func logBeforeTool(stepID string) llmagent.BeforeToolCallback {
+	return func(_ agent.Context, t adktool.Tool, args map[string]any) (map[string]any, error) {
+		log.Printf("[%s] Tool call: %s args=%v", stepID, t.Name(), args)
+
+		return nil, nil //nolint:nilnil // proceed with tool execution
+	}
+}
+
+func logToolError(stepID string) llmagent.OnToolErrorCallback {
+	return func(_ agent.Context, t adktool.Tool, args map[string]any, err error) (map[string]any, error) {
+		log.Printf("[%s] Tool ERROR: %s err=%v args=%v", stepID, t.Name(), err, args)
+
+		return nil, nil //nolint:nilnil // let ADK handle the error normally
 	}
 }
