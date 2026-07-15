@@ -41,7 +41,7 @@ func Run(ctx context.Context, configPath, workflowPath string, opts ...Option) e
 
 	log.Printf("Running workflow %q with %d steps", wf.Name, len(wf.Steps))
 
-	llm, err := resolveLLM(ctx, cfg, options)
+	resolver, err := buildModelResolver(ctx, cfg, options)
 	if err != nil {
 		return err
 	}
@@ -53,7 +53,7 @@ func Run(ctx context.Context, configPath, workflowPath string, opts ...Option) e
 
 	eventCtx, _ := prompt.LoadEventContext() //nolint:nolintlint // event context is optional
 
-	root, err := compiler.Compile(wf, cfg, reg, llm, eventCtx)
+	root, err := compiler.Compile(wf, cfg, reg, resolver, eventCtx)
 	if err != nil {
 		return fmt.Errorf("compiling workflow: %w", err)
 	}
@@ -121,22 +121,35 @@ func extractOutput(event *session.Event) string {
 	return last
 }
 
-func resolveLLM(ctx context.Context, cfg *config.Config, options *Options) (model.LLM, error) {
+func buildModelResolver(ctx context.Context, cfg *config.Config, options *Options) (compiler.ModelResolver, error) {
+	// If a mock LLM is injected, return it for all model names.
 	if options.LLM != nil {
-		return options.LLM, nil
+		return func(_ string) (model.LLM, error) {
+			return options.LLM, nil
+		}, nil
 	}
 
-	modelName := cfg.Defaults.Model
-	if cfg.Models != nil {
-		modelName = config.ResolveModel(modelName, cfg.Models)
-	}
-
-	llm, err := provider.NewLLM(ctx, cfg.Provider, modelName)
+	p, err := provider.NewProvider(ctx, cfg.Provider)
 	if err != nil {
-		return nil, fmt.Errorf("creating LLM provider: %w", err)
+		return nil, fmt.Errorf("creating provider: %w", err)
 	}
 
-	return llm, nil
+	cache := make(map[string]model.LLM)
+
+	return func(modelName string) (model.LLM, error) {
+		if llm, ok := cache[modelName]; ok {
+			return llm, nil
+		}
+
+		llm, err := p.Model(modelName)
+		if err != nil {
+			return nil, fmt.Errorf("creating model %q: %w", modelName, err)
+		}
+
+		cache[modelName] = llm
+
+		return llm, nil
+	}, nil
 }
 
 func buildRegistry(options *Options) (*tool.Registry, error) {

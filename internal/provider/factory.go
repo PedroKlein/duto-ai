@@ -16,30 +16,47 @@ import (
 // ErrUnknownProviderType is returned when the provider type is not supported.
 var ErrUnknownProviderType = errors.New("unknown provider type")
 
-// NewLLM creates a model.LLM from the config provider definition and model name.
-func NewLLM(ctx context.Context, cfg config.Provider, modelName string) (model.LLM, error) {
+// Provider wraps a configured LLM provider that can create model instances.
+type Provider struct {
+	sap *sapaicore.Provider
+}
+
+// NewProvider creates a Provider from the config definition.
+func NewProvider(ctx context.Context, cfg config.Provider) (*Provider, error) {
 	switch cfg.Type {
 	case "ai-core":
-		return newAICoreLLM(ctx, cfg, modelName)
+		opts := buildAICoreOptions(cfg)
+
+		p, err := sapaicore.NewProvider(ctx, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("creating ai-core provider: %w", err)
+		}
+
+		return &Provider{sap: p}, nil
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrUnknownProviderType, cfg.Type)
 	}
 }
 
-func newAICoreLLM(ctx context.Context, cfg config.Provider, modelName string) (model.LLM, error) {
-	opts := buildAICoreOptions(cfg)
-
-	provider, err := sapaicore.NewProvider(ctx, opts...)
+// Model returns a model.LLM for the given model name.
+func (p *Provider) Model(name string) (model.LLM, error) {
+	llm, err := p.sap.Model(name)
 	if err != nil {
-		return nil, fmt.Errorf("creating ai-core provider: %w", err)
-	}
-
-	llm, err := provider.Model(modelName)
-	if err != nil {
-		return nil, fmt.Errorf("creating model %q: %w", modelName, err)
+		return nil, fmt.Errorf("creating model %q: %w", name, err)
 	}
 
 	return llm, nil
+}
+
+// NewLLM creates a model.LLM from the config provider definition and model name.
+// Convenience function that creates a provider and immediately resolves one model.
+func NewLLM(ctx context.Context, cfg config.Provider, modelName string) (model.LLM, error) {
+	p, err := NewProvider(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	return p.Model(modelName)
 }
 
 func buildAICoreOptions(cfg config.Provider) []sapaicore.Option {

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/model"
 
 	"github.com/PedroKlein/duto-ai/internal/compiler"
 	"github.com/PedroKlein/duto-ai/internal/config"
@@ -29,9 +30,10 @@ func TestCompile_LinearDAG(t *testing.T) {
 	}
 
 	reg := tool.NewRegistry()
-	llm := mockllm.New(mockllm.Response{Text: "ok"})
+	mock := mockllm.New(mockllm.Response{Text: "ok"})
+	resolve := func(_ string) (model.LLM, error) { return mock, nil }
 
-	result, err := compiler.Compile(wf, cfg, reg, llm, nil)
+	result, err := compiler.Compile(wf, cfg, reg, resolve, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -63,9 +65,10 @@ func TestCompile_ParallelDAG(t *testing.T) {
 	}
 
 	reg := tool.NewRegistry()
-	llm := mockllm.New(mockllm.Response{Text: "ok"})
+	mock := mockllm.New(mockllm.Response{Text: "ok"})
+	resolve := func(_ string) (model.LLM, error) { return mock, nil }
 
-	result, err := compiler.Compile(wf, cfg, reg, llm, nil)
+	result, err := compiler.Compile(wf, cfg, reg, resolve, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -94,9 +97,10 @@ func TestCompile_SingleStep(t *testing.T) {
 	}
 
 	reg := tool.NewRegistry()
-	llm := mockllm.New(mockllm.Response{Text: "ok"})
+	mock := mockllm.New(mockllm.Response{Text: "ok"})
+	resolve := func(_ string) (model.LLM, error) { return mock, nil }
 
-	result, err := compiler.Compile(wf, cfg, reg, llm, nil)
+	result, err := compiler.Compile(wf, cfg, reg, resolve, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -118,9 +122,10 @@ func TestCompile_CircularDependency(t *testing.T) {
 	}
 
 	reg := tool.NewRegistry()
-	llm := mockllm.New(mockllm.Response{Text: "ok"})
+	mock := mockllm.New(mockllm.Response{Text: "ok"})
+	resolve := func(_ string) (model.LLM, error) { return mock, nil }
 
-	_, err := compiler.Compile(wf, cfg, reg, llm, nil)
+	_, err := compiler.Compile(wf, cfg, reg, resolve, nil)
 	if err == nil {
 		t.Fatal("expected error for circular dependency")
 	}

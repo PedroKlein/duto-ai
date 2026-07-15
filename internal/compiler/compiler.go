@@ -14,15 +14,19 @@ import (
 	"github.com/PedroKlein/duto-ai/internal/tool"
 )
 
+// ModelResolver returns a model.LLM for the given model name.
+// It is called once per unique model name during compilation.
+type ModelResolver func(modelName string) (model.LLM, error)
+
 // Compile transforms a parsed workflow and config into a ready-to-run ADK workflow agent.
 // The returned agent.Agent can be passed directly to runner.New as the root agent.
-func Compile(wf *config.Workflow, cfg *config.Config, reg *tool.Registry, llm model.LLM, eventCtx *prompt.EventContext) (agent.Agent, error) {
+func Compile(wf *config.Workflow, cfg *config.Config, reg *tool.Registry, resolve ModelResolver, eventCtx *prompt.EventContext) (agent.Agent, error) {
 	sorted, err := config.TopologicalSort(wf.Steps)
 	if err != nil {
 		return nil, fmt.Errorf("topological sort: %w", err)
 	}
 
-	nodes, agents, err := buildNodes(sorted, cfg, reg, llm, eventCtx)
+	nodes, agents, err := buildNodes(sorted, cfg, reg, resolve, eventCtx)
 	if err != nil {
 		return nil, err
 	}
@@ -42,12 +46,12 @@ func Compile(wf *config.Workflow, cfg *config.Config, reg *tool.Registry, llm mo
 	return root, nil
 }
 
-func buildNodes(steps []config.Step, cfg *config.Config, reg *tool.Registry, llm model.LLM, eventCtx *prompt.EventContext) (map[string]workflow.Node, []agent.Agent, error) {
+func buildNodes(steps []config.Step, cfg *config.Config, reg *tool.Registry, resolve ModelResolver, eventCtx *prompt.EventContext) (map[string]workflow.Node, []agent.Agent, error) {
 	nodes := make(map[string]workflow.Node, len(steps))
 	agents := make([]agent.Agent, 0, len(steps))
 
 	for _, step := range steps {
-		node, a, err := buildNode(step, cfg, reg, llm, eventCtx)
+		node, a, err := buildNode(step, cfg, reg, resolve, eventCtx)
 		if err != nil {
 			return nil, nil, fmt.Errorf("building node %q: %w", step.ID, err)
 		}

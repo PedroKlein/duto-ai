@@ -6,7 +6,6 @@ import (
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
-	"google.golang.org/adk/v2/model"
 	adktool "google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/workflow"
 	"google.golang.org/genai"
@@ -16,7 +15,7 @@ import (
 	"github.com/PedroKlein/duto-ai/internal/tool"
 )
 
-func buildNode(step config.Step, cfg *config.Config, reg *tool.Registry, llm model.LLM, eventCtx *prompt.EventContext) (workflow.Node, agent.Agent, error) {
+func buildNode(step config.Step, cfg *config.Config, reg *tool.Registry, resolve ModelResolver, eventCtx *prompt.EventContext) (workflow.Node, agent.Agent, error) {
 	instruction := prompt.BuildSystemPrompt(step, cfg, eventCtx)
 
 	// The step prompt becomes part of the instruction.
@@ -24,6 +23,21 @@ func buildNode(step config.Step, cfg *config.Config, reg *tool.Registry, llm mod
 	// so Go template references ({{ .Steps.X.Output }}) are stripped.
 	if step.Prompt != "" {
 		instruction += "\n\n## Task\n" + stripTemplates(step.Prompt)
+	}
+
+	// Resolve the model for this step
+	modelName := step.Model
+	if modelName == "" {
+		modelName = cfg.Defaults.Model
+	}
+
+	if cfg.Models != nil {
+		modelName = config.ResolveModel(modelName, cfg.Models)
+	}
+
+	llm, err := resolve(modelName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolving model %q: %w", modelName, err)
 	}
 
 	toolNames := tool.ResolveNames(cfg.Defaults.Tools, step.Tools)
