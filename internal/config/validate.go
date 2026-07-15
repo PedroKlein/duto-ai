@@ -9,6 +9,8 @@ var (
 	ErrNilWorkflow        = errors.New("workflow is nil")
 	ErrNoSteps            = errors.New("workflow has no steps")
 	ErrEmptyStepID        = errors.New("step has empty ID")
+	ErrDuplicateStepID    = errors.New("duplicate step ID")
+	ErrUnknownDependency  = errors.New("unknown dependency")
 	ErrCircularDependency = errors.New("circular dependency detected")
 )
 
@@ -33,7 +35,7 @@ func ValidateWorkflow(wf *Workflow) error {
 		}
 
 		if ids[step.ID] {
-			return fmt.Errorf("duplicate step ID %q: %w", step.ID, ErrEmptyStepID)
+			return fmt.Errorf("step ID %q: %w", step.ID, ErrDuplicateStepID)
 		}
 
 		ids[step.ID] = true
@@ -42,7 +44,7 @@ func ValidateWorkflow(wf *Workflow) error {
 	for _, step := range wf.Steps {
 		for _, need := range step.Needs {
 			if !ids[need] {
-				return fmt.Errorf("step %q references unknown dependency %q: %w", step.ID, need, ErrNilWorkflow)
+				return fmt.Errorf("step %q references %q: %w", step.ID, need, ErrUnknownDependency)
 			}
 		}
 	}
