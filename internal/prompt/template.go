@@ -15,11 +15,12 @@ type TemplateData struct {
 
 // EventTemplateData exposes event context fields for template rendering.
 type EventTemplateData struct {
-	Owner    string
-	Repo     string
-	PRNumber int
-	Author   string
-	Event    string // event name (e.g. "pull_request")
+	Owner       string
+	Repo        string
+	PRNumber    int
+	IssueNumber int
+	Author      string
+	Event       string // event name (e.g. "pull_request")
 }
 
 // RenderTemplate renders a prompt string as a Go template with event context
@@ -57,11 +58,12 @@ func buildTemplateData(eventCtx *EventContext) TemplateData {
 		owner, repo, _ := splitRepo(eventCtx.Repo)
 
 		data.Event = EventTemplateData{
-			Owner:    owner,
-			Repo:     repo,
-			PRNumber: eventCtx.PRNumber,
-			Author:   eventCtx.Author,
-			Event:    eventCtx.EventName,
+			Owner:       owner,
+			Repo:        repo,
+			PRNumber:    eventCtx.PRNumber,
+			IssueNumber: eventCtx.IssueNumber,
+			Author:      eventCtx.Author,
+			Event:       eventCtx.EventName,
 		}
 	}
 

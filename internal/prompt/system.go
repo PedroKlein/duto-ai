@@ -79,6 +79,10 @@ func buildEventLayer(ctx *EventContext) string {
 		parts = append(parts, fmt.Sprintf("PR Number: %d", ctx.PRNumber))
 	}
 
+	if ctx.IssueNumber > 0 {
+		parts = append(parts, fmt.Sprintf("Issue Number: %d", ctx.IssueNumber))
+	}
+
 	if ctx.Author != "" {
 		parts = append(parts, "Author: "+ctx.Author)
 	}
