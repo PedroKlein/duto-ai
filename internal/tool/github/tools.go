@@ -72,6 +72,32 @@ type OKResult struct {
 	Success bool `json:"success"`
 }
 
+// ReadCommentsArgs is the input schema for the github.read-comments tool.
+type ReadCommentsArgs struct {
+	Owner  string `json:"owner"`  // repository owner
+	Repo   string `json:"repo"`   // repository name
+	Number int    `json:"number"` // issue or PR number
+}
+
+// ReadReviewsArgs is the input schema for the github.read-reviews tool.
+type ReadReviewsArgs struct {
+	Owner  string `json:"owner"`  // repository owner
+	Repo   string `json:"repo"`   // repository name
+	Number int    `json:"number"` // pull request number
+}
+
+// ReadChecksArgs is the input schema for the github.read-checks tool.
+type ReadChecksArgs struct {
+	Owner string `json:"owner"` // repository owner
+	Repo  string `json:"repo"`  // repository name
+	Ref   string `json:"ref"`   // branch, tag, or commit SHA
+}
+
+// SearchIssuesArgs is the input schema for the github.search-issues tool.
+type SearchIssuesArgs struct {
+	Query string `json:"query"` // GitHub search query string
+}
+
 // RegisterAll creates all GitHub tools and registers them in the tool registry.
 func RegisterAll(reg *dtool.Registry, client *Client) error {
 	tools := []struct {
@@ -81,6 +107,10 @@ func RegisterAll(reg *dtool.Registry, client *Client) error {
 		{"github.read-pr", func() (tool.Tool, error) { return newReadPRTool(client) }},
 		{"github.read-diff", func() (tool.Tool, error) { return newReadDiffTool(client) }},
 		{"github.list-changed-files", func() (tool.Tool, error) { return newListChangedFilesTool(client) }},
+		{"github.read-comments", func() (tool.Tool, error) { return newReadCommentsTool(client) }},
+		{"github.read-reviews", func() (tool.Tool, error) { return newReadReviewsTool(client) }},
+		{"github.read-checks", func() (tool.Tool, error) { return newReadChecksTool(client) }},
+		{"github.search-issues", func() (tool.Tool, error) { return newSearchIssuesTool(client) }},
 		{"github.post-review", func() (tool.Tool, error) { return newPostReviewTool(client) }},
 		{"github.post-comment", func() (tool.Tool, error) { return newPostCommentTool(client) }},
 		{"github.add-labels", func() (tool.Tool, error) { return newAddLabelsTool(client) }},
@@ -191,6 +221,54 @@ func newAddLabelsTool(client *Client) (tool.Tool, error) {
 			}
 
 			return &OKResult{Success: true}, nil
+		},
+	)
+}
+
+func newReadCommentsTool(client *Client) (tool.Tool, error) {
+	return functiontool.New[ReadCommentsArgs, *CommentsResult](
+		functiontool.Config{
+			Name:        "github.read-comments",
+			Description: "Read comments on an issue or pull request",
+		},
+		func(ctx agent.Context, args ReadCommentsArgs) (*CommentsResult, error) {
+			return client.ReadComments(ctx, ReadCommentsInput(args))
+		},
+	)
+}
+
+func newReadReviewsTool(client *Client) (tool.Tool, error) {
+	return functiontool.New[ReadReviewsArgs, *ReviewsResult](
+		functiontool.Config{
+			Name:        "github.read-reviews",
+			Description: "Read reviews on a pull request with their state (APPROVED, CHANGES_REQUESTED, etc.)",
+		},
+		func(ctx agent.Context, args ReadReviewsArgs) (*ReviewsResult, error) {
+			return client.ReadReviews(ctx, ReadReviewsInput(args))
+		},
+	)
+}
+
+func newReadChecksTool(client *Client) (tool.Tool, error) {
+	return functiontool.New[ReadChecksArgs, *ChecksResult](
+		functiontool.Config{
+			Name:        "github.read-checks",
+			Description: "Read CI check runs for a branch, tag, or commit SHA",
+		},
+		func(ctx agent.Context, args ReadChecksArgs) (*ChecksResult, error) {
+			return client.ReadChecks(ctx, ReadChecksInput(args))
+		},
+	)
+}
+
+func newSearchIssuesTool(client *Client) (tool.Tool, error) {
+	return functiontool.New[SearchIssuesArgs, *SearchIssuesResult](
+		functiontool.Config{
+			Name:        "github.search-issues",
+			Description: "Search GitHub issues and pull requests using GitHub search query syntax",
+		},
+		func(ctx agent.Context, args SearchIssuesArgs) (*SearchIssuesResult, error) {
+			return client.SearchIssues(ctx, SearchIssuesInput(args))
 		},
 	)
 }

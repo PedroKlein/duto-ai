@@ -112,3 +112,217 @@ func getString(m map[string]any, key string) string {
 
 	return ""
 }
+
+// ReadCommentsInput is the input for reading comments.
+type ReadCommentsInput struct {
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+}
+
+// Comment represents a PR/issue comment.
+type Comment struct {
+	Author string `json:"author"`
+	Body   string `json:"body"`
+}
+
+// CommentsResult wraps the list of comments.
+type CommentsResult struct {
+	Comments []Comment `json:"comments"`
+}
+
+// ReadComments returns comments on an issue or PR.
+func (c *Client) ReadComments(ctx context.Context, input ReadCommentsInput) (*CommentsResult, error) {
+	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", input.Owner, input.Repo, input.Number)
+
+	data, err := c.get(ctx, path, "")
+	if err != nil {
+		return nil, fmt.Errorf("reading comments: %w", err)
+	}
+
+	var raw []map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parsing comments: %w", err)
+	}
+
+	result := &CommentsResult{Comments: make([]Comment, 0, len(raw))}
+
+	for _, c := range raw {
+		author := ""
+		if user, ok := c["user"].(map[string]any); ok {
+			author = getString(user, "login")
+		}
+
+		result.Comments = append(result.Comments, Comment{
+			Author: author,
+			Body:   getString(c, "body"),
+		})
+	}
+
+	return result, nil
+}
+
+// ReadReviewsInput is the input for reading reviews.
+type ReadReviewsInput struct {
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+}
+
+// Review represents a PR review.
+type Review struct {
+	Author string `json:"author"`
+	State  string `json:"state"`
+	Body   string `json:"body"`
+}
+
+// ReviewsResult wraps the list of reviews.
+type ReviewsResult struct {
+	Reviews []Review `json:"reviews"`
+}
+
+// ReadReviews returns reviews on a PR.
+func (c *Client) ReadReviews(ctx context.Context, input ReadReviewsInput) (*ReviewsResult, error) {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", input.Owner, input.Repo, input.Number)
+
+	data, err := c.get(ctx, path, "")
+	if err != nil {
+		return nil, fmt.Errorf("reading reviews: %w", err)
+	}
+
+	var raw []map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parsing reviews: %w", err)
+	}
+
+	result := &ReviewsResult{Reviews: make([]Review, 0, len(raw))}
+
+	for _, r := range raw {
+		author := ""
+		if user, ok := r["user"].(map[string]any); ok {
+			author = getString(user, "login")
+		}
+
+		result.Reviews = append(result.Reviews, Review{
+			Author: author,
+			State:  getString(r, "state"),
+			Body:   getString(r, "body"),
+		})
+	}
+
+	return result, nil
+}
+
+// ReadChecksInput is the input for reading CI checks.
+type ReadChecksInput struct {
+	Owner string `json:"owner"`
+	Repo  string `json:"repo"`
+	Ref   string `json:"ref"` // branch name, tag, or SHA
+}
+
+// CheckRun represents a CI check.
+type CheckRun struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+}
+
+// ChecksResult wraps the check runs.
+type ChecksResult struct {
+	Checks []CheckRun `json:"checks"`
+}
+
+// ReadChecks returns CI check runs for a ref.
+func (c *Client) ReadChecks(ctx context.Context, input ReadChecksInput) (*ChecksResult, error) {
+	path := fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs", input.Owner, input.Repo, input.Ref)
+
+	data, err := c.get(ctx, path, "")
+	if err != nil {
+		return nil, fmt.Errorf("reading checks: %w", err)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("parsing checks: %w", err)
+	}
+
+	result := &ChecksResult{}
+
+	runs, _ := resp["check_runs"].([]any)
+	for _, r := range runs {
+		run, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		result.Checks = append(result.Checks, CheckRun{
+			Name:       getString(run, "name"),
+			Status:     getString(run, "status"),
+			Conclusion: getString(run, "conclusion"),
+		})
+	}
+
+	return result, nil
+}
+
+// SearchIssuesInput is the input for searching issues.
+type SearchIssuesInput struct {
+	Query string `json:"query"` // GitHub search query
+}
+
+// SearchIssue represents a search result.
+type SearchIssue struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	State  string `json:"state"`
+	Author string `json:"author"`
+}
+
+// SearchIssuesResult wraps issue search results.
+type SearchIssuesResult struct {
+	Issues []SearchIssue `json:"issues"`
+}
+
+// SearchIssues searches GitHub issues and PRs.
+func (c *Client) SearchIssues(ctx context.Context, input SearchIssuesInput) (*SearchIssuesResult, error) {
+	path := "/search/issues?q=" + input.Query
+
+	data, err := c.get(ctx, path, "")
+	if err != nil {
+		return nil, fmt.Errorf("searching issues: %w", err)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("parsing search results: %w", err)
+	}
+
+	result := &SearchIssuesResult{}
+
+	items, _ := resp["items"].([]any)
+	for _, item := range items {
+		i, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		author := ""
+		if user, ok := i["user"].(map[string]any); ok {
+			author = getString(user, "login")
+		}
+
+		number := 0
+		if n, ok := i["number"].(float64); ok {
+			number = int(n)
+		}
+
+		result.Issues = append(result.Issues, SearchIssue{
+			Number: number,
+			Title:  getString(i, "title"),
+			State:  getString(i, "state"),
+			Author: author,
+		})
+	}
+
+	return result, nil
+}

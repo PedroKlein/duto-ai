@@ -28,8 +28,12 @@ func TestRegisterAll(t *testing.T) {
 		"github.list-changed-files",
 		"github.post-comment",
 		"github.post-review",
+		"github.read-checks",
+		"github.read-comments",
 		"github.read-diff",
 		"github.read-pr",
+		"github.read-reviews",
+		"github.search-issues",
 	}
 
 	names := reg.Names()
