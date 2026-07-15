@@ -25,7 +25,10 @@ func TestRegisterAll(t *testing.T) {
 
 	expectedTools := []string{
 		"github.add-labels",
+		"github.create-issue",
+		"github.edit-issue",
 		"github.list-changed-files",
+		"github.merge-pr",
 		"github.post-comment",
 		"github.post-review",
 		"github.read-checks",
@@ -33,6 +36,7 @@ func TestRegisterAll(t *testing.T) {
 		"github.read-diff",
 		"github.read-pr",
 		"github.read-reviews",
+		"github.request-reviewers",
 		"github.search-issues",
 	}
 

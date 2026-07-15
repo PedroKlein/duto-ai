@@ -98,6 +98,41 @@ type SearchIssuesArgs struct {
 	Query string `json:"query"` // GitHub search query string
 }
 
+// CreateIssueArgs is the input schema for the github.create-issue tool.
+type CreateIssueArgs struct {
+	Owner  string   `json:"owner"`            // repository owner
+	Repo   string   `json:"repo"`             // repository name
+	Title  string   `json:"title"`            // issue title
+	Body   string   `json:"body"`             // issue body
+	Labels []string `json:"labels,omitempty"` // labels to add
+}
+
+// EditIssueArgs is the input schema for the github.edit-issue tool.
+type EditIssueArgs struct {
+	Owner  string `json:"owner"`           // repository owner
+	Repo   string `json:"repo"`            // repository name
+	Number int    `json:"number"`          // issue or PR number
+	Title  string `json:"title,omitempty"` // new title
+	Body   string `json:"body,omitempty"`  // new body
+	State  string `json:"state,omitempty"` // open or closed
+}
+
+// MergePRArgs is the input schema for the github.merge-pr tool.
+type MergePRArgs struct {
+	Owner       string `json:"owner"`                  // repository owner
+	Repo        string `json:"repo"`                   // repository name
+	Number      int    `json:"number"`                 // pull request number
+	MergeMethod string `json:"merge_method,omitempty"` // merge, squash, or rebase
+}
+
+// RequestReviewersArgs is the input schema for the github.request-reviewers tool.
+type RequestReviewersArgs struct {
+	Owner     string   `json:"owner"`     // repository owner
+	Repo      string   `json:"repo"`      // repository name
+	Number    int      `json:"number"`    // pull request number
+	Reviewers []string `json:"reviewers"` // usernames to request review from
+}
+
 // RegisterAll creates all GitHub tools and registers them in the tool registry.
 func RegisterAll(reg *dtool.Registry, client *Client) error {
 	tools := []struct {
@@ -114,6 +149,10 @@ func RegisterAll(reg *dtool.Registry, client *Client) error {
 		{"github.post-review", func() (tool.Tool, error) { return newPostReviewTool(client) }},
 		{"github.post-comment", func() (tool.Tool, error) { return newPostCommentTool(client) }},
 		{"github.add-labels", func() (tool.Tool, error) { return newAddLabelsTool(client) }},
+		{"github.create-issue", func() (tool.Tool, error) { return newCreateIssueTool(client) }},
+		{"github.edit-issue", func() (tool.Tool, error) { return newEditIssueTool(client) }},
+		{"github.merge-pr", func() (tool.Tool, error) { return newMergePRTool(client) }},
+		{"github.request-reviewers", func() (tool.Tool, error) { return newRequestReviewersTool(client) }},
 	}
 
 	for _, t := range tools {
@@ -269,6 +308,74 @@ func newSearchIssuesTool(client *Client) (tool.Tool, error) {
 		},
 		func(ctx agent.Context, args SearchIssuesArgs) (*SearchIssuesResult, error) {
 			return client.SearchIssues(ctx, SearchIssuesInput(args))
+		},
+	)
+}
+
+func newCreateIssueTool(client *Client) (tool.Tool, error) {
+	return functiontool.New[CreateIssueArgs, *OKResult](
+		functiontool.Config{
+			Name:        "github.create-issue",
+			Description: "Create a new issue in a repository",
+		},
+		func(ctx agent.Context, args CreateIssueArgs) (*OKResult, error) {
+			err := client.CreateIssue(ctx, CreateIssueInput(args))
+			if err != nil {
+				return nil, err
+			}
+
+			return &OKResult{Success: true}, nil
+		},
+	)
+}
+
+func newEditIssueTool(client *Client) (tool.Tool, error) {
+	return functiontool.New[EditIssueArgs, *OKResult](
+		functiontool.Config{
+			Name:        "github.edit-issue",
+			Description: "Edit an existing issue or pull request (title, body, state)",
+		},
+		func(ctx agent.Context, args EditIssueArgs) (*OKResult, error) {
+			err := client.EditIssue(ctx, EditIssueInput(args))
+			if err != nil {
+				return nil, err
+			}
+
+			return &OKResult{Success: true}, nil
+		},
+	)
+}
+
+func newMergePRTool(client *Client) (tool.Tool, error) {
+	return functiontool.New[MergePRArgs, *OKResult](
+		functiontool.Config{
+			Name:        "github.merge-pr",
+			Description: "Merge a pull request (supports merge, squash, or rebase method)",
+		},
+		func(ctx agent.Context, args MergePRArgs) (*OKResult, error) {
+			err := client.MergePR(ctx, MergePRInput(args))
+			if err != nil {
+				return nil, err
+			}
+
+			return &OKResult{Success: true}, nil
+		},
+	)
+}
+
+func newRequestReviewersTool(client *Client) (tool.Tool, error) {
+	return functiontool.New[RequestReviewersArgs, *OKResult](
+		functiontool.Config{
+			Name:        "github.request-reviewers",
+			Description: "Request reviewers on a pull request",
+		},
+		func(ctx agent.Context, args RequestReviewersArgs) (*OKResult, error) {
+			err := client.RequestReviewers(ctx, RequestReviewersInput(args))
+			if err != nil {
+				return nil, err
+			}
+
+			return &OKResult{Success: true}, nil
 		},
 	)
 }

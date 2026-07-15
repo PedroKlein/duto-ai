@@ -44,9 +44,21 @@ func (c *Client) get(ctx context.Context, path, accept string) ([]byte, error) {
 }
 
 func (c *Client) post(ctx context.Context, path string, body []byte) error {
+	return c.mutate(ctx, http.MethodPost, path, body)
+}
+
+func (c *Client) patch(ctx context.Context, path string, body []byte) error {
+	return c.mutate(ctx, http.MethodPatch, path, body)
+}
+
+func (c *Client) put(ctx context.Context, path string, body []byte) error {
+	return c.mutate(ctx, http.MethodPut, path, body)
+}
+
+func (c *Client) mutate(ctx context.Context, method, path string, body []byte) error {
 	url := c.baseURL + path
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
 	}
