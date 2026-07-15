@@ -2,10 +2,12 @@ package compiler
 
 import (
 	"fmt"
+	"log"
 	"strings"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
+	model "google.golang.org/adk/v2/model"
 	adktool "google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/workflow"
 	"google.golang.org/genai"
@@ -44,11 +46,12 @@ func buildNode(step config.Step, cfg *config.Config, reg *tool.Registry, resolve
 	resolvedTools := reg.Resolve(toolNames)
 
 	agentCfg := llmagent.Config{
-		Name:        step.ID,
-		Description: fmt.Sprintf("Step %q in workflow", step.ID),
-		Instruction: instruction,
-		Model:       llm,
-		Mode:        llmagent.ModeSingleTurn,
+		Name:                 step.ID,
+		Description:          fmt.Sprintf("Step %q in workflow", step.ID),
+		Instruction:          instruction,
+		Model:                llm,
+		Mode:                 llmagent.ModeSingleTurn,
+		BeforeModelCallbacks: []llmagent.BeforeModelCallback{logBeforeModel(step.ID)},
 	}
 
 	if gcc := buildGCC(step, cfg); gcc != nil {
@@ -149,4 +152,35 @@ func stripTemplates(s string) string {
 	}
 
 	return strings.TrimSpace(result.String())
+}
+
+func logBeforeModel(stepID string) llmagent.BeforeModelCallback {
+	return func(_ agent.Context, req *model.LLMRequest) (*model.LLMResponse, error) {
+		toolCount := 0
+
+		if req.Config != nil {
+			for _, t := range req.Config.Tools {
+				if t != nil {
+					toolCount += len(t.FunctionDeclarations)
+				}
+			}
+		}
+
+		log.Printf("[%s] LLM call: %d tool declarations, %d content messages",
+			stepID, toolCount, len(req.Contents))
+
+		if toolCount > 0 {
+			var names []string
+
+			for _, t := range req.Config.Tools {
+				for _, fd := range t.FunctionDeclarations {
+					names = append(names, fd.Name)
+				}
+			}
+
+			log.Printf("[%s] Tools: %s", stepID, strings.Join(names, ", "))
+		}
+
+		return nil, nil //nolint:nilnil // proceed with normal LLM call
+	}
 }
