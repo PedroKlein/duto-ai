@@ -190,6 +190,9 @@ func writeOutput(result *runtime.WorkflowResult, format runtime.OutputFormat, ou
 	// Set GitHub step outputs when running in GHA.
 	writeGitHubOutput(result)
 
+	// Write to GITHUB_STEP_SUMMARY for action run visibility.
+	writeStepSummary(result)
+
 	return nil
 }
 
@@ -214,4 +217,21 @@ func writeGitHubOutput(result *runtime.WorkflowResult) {
 	if failed := result.Failed(); failed != nil {
 		_, _ = fmt.Fprintf(f, "failed_step=%s\n", failed.StepID)
 	}
+}
+
+func writeStepSummary(result *runtime.WorkflowResult) {
+	summaryPath := os.Getenv("GITHUB_STEP_SUMMARY")
+	if summaryPath == "" {
+		return
+	}
+
+	f, err := os.OpenFile(summaryPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644) //nolint:gosec // GITHUB_STEP_SUMMARY path is provided by GHA runner
+	if err != nil {
+		slog.Debug("opening GITHUB_STEP_SUMMARY", "error", err)
+
+		return
+	}
+	defer f.Close() //nolint:errcheck // best-effort write to step summary
+
+	_, _ = fmt.Fprintln(f, result.FormatMarkdown())
 }

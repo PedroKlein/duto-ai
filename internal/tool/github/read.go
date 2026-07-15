@@ -13,6 +13,57 @@ type ReadPRInput struct {
 	Number int    `json:"number"`
 }
 
+// ReadIssueInput is the input for the read-issue tool.
+type ReadIssueInput struct {
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
+}
+
+// ReadIssueOutput is the output from the read-issue tool.
+type ReadIssueOutput struct {
+	Title  string   `json:"title"`
+	Body   string   `json:"body"`
+	Author string   `json:"author"`
+	State  string   `json:"state"`
+	Labels []string `json:"labels"`
+}
+
+// ReadIssue returns issue metadata by number.
+func (c *Client) ReadIssue(ctx context.Context, input ReadIssueInput) (*ReadIssueOutput, error) {
+	path := fmt.Sprintf("/repos/%s/%s/issues/%d", input.Owner, input.Repo, input.Number)
+
+	data, err := c.get(ctx, path, "")
+	if err != nil {
+		return nil, fmt.Errorf("reading issue: %w", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parsing issue response: %w", err)
+	}
+
+	output := &ReadIssueOutput{
+		Title: getString(raw, "title"),
+		Body:  getString(raw, "body"),
+		State: getString(raw, "state"),
+	}
+
+	if user, ok := raw["user"].(map[string]any); ok {
+		output.Author = getString(user, "login")
+	}
+
+	if labels, ok := raw["labels"].([]any); ok {
+		for _, l := range labels {
+			if label, ok := l.(map[string]any); ok {
+				output.Labels = append(output.Labels, getString(label, "name"))
+			}
+		}
+	}
+
+	return output, nil
+}
+
 // ReadPROutput is the output from the read-pr tool.
 type ReadPROutput struct {
 	Title  string   `json:"title"`

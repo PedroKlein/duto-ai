@@ -10,6 +10,13 @@ import (
 	dtool "github.com/PedroKlein/duto-ai/internal/tool"
 )
 
+// ReadIssueArgs is the input schema for the github.read-issue tool.
+type ReadIssueArgs struct {
+	Owner  string `json:"owner"`  // repository owner
+	Repo   string `json:"repo"`   // repository name
+	Number int    `json:"number"` // issue number
+}
+
 // ReadPRArgs is the input schema for the github.read-pr tool.
 type ReadPRArgs struct {
 	Owner  string `json:"owner"`  // repository owner
@@ -139,6 +146,7 @@ func RegisterAll(reg *dtool.Registry, client *Client) error {
 		name   string
 		create func() (tool.Tool, error)
 	}{
+		{"github.read-issue", func() (tool.Tool, error) { return newReadIssueTool(client) }},
 		{"github.read-pr", func() (tool.Tool, error) { return newReadPRTool(client) }},
 		{"github.read-diff", func() (tool.Tool, error) { return newReadDiffTool(client) }},
 		{"github.list-changed-files", func() (tool.Tool, error) { return newListChangedFilesTool(client) }},
@@ -175,6 +183,18 @@ func newReadPRTool(client *Client) (tool.Tool, error) {
 		},
 		func(ctx agent.Context, args ReadPRArgs) (*ReadPROutput, error) {
 			return client.ReadPR(ctx, ReadPRInput(args))
+		},
+	)
+}
+
+func newReadIssueTool(client *Client) (tool.Tool, error) {
+	return functiontool.New[ReadIssueArgs, *ReadIssueOutput](
+		functiontool.Config{
+			Name:        "github.read-issue",
+			Description: "Read issue metadata including title, body, author, state, and labels by issue number",
+		},
+		func(ctx agent.Context, args ReadIssueArgs) (*ReadIssueOutput, error) {
+			return client.ReadIssue(ctx, ReadIssueInput(args))
 		},
 	)
 }

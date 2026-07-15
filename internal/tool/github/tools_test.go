@@ -34,6 +34,7 @@ func TestRegisterAll(t *testing.T) {
 		"github.read-checks",
 		"github.read-comments",
 		"github.read-diff",
+		"github.read-issue",
 		"github.read-pr",
 		"github.read-reviews",
 		"github.request-reviewers",
