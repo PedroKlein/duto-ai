@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
@@ -27,51 +28,61 @@ import (
 
 // Run executes a duto-ai workflow end-to-end using ADK's native workflow engine.
 func Run(ctx context.Context, configPath, workflowPath string, opts ...Option) error {
+	_, err := RunWithResult(ctx, configPath, workflowPath, opts...)
+	return err
+}
+
+// RunWithResult executes a workflow and returns the structured result.
+// On error, the result still contains partial step data for diagnostics.
+func RunWithResult(ctx context.Context, configPath, workflowPath string, opts ...Option) (*WorkflowResult, error) {
 	options := applyOptions(opts)
 
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return nil, fmt.Errorf("loading config: %w", err)
 	}
 
 	wf, err := config.LoadWorkflow(workflowPath)
 	if err != nil {
-		return fmt.Errorf("loading workflow: %w", err)
+		return nil, fmt.Errorf("loading workflow: %w", err)
 	}
 
 	if vErr := config.ValidateWorkflow(wf); vErr != nil {
-		return fmt.Errorf("validating workflow: %w", vErr)
+		return nil, fmt.Errorf("validating workflow: %w", vErr)
 	}
 
 	slog.Info("running workflow", "name", wf.Name, "steps", len(wf.Steps))
 
 	resolver, err := buildModelResolver(ctx, cfg, options)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	reg, err := buildRegistry(options)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	eventCtx, _ := prompt.LoadEventContext() //nolint:nolintlint // event context is optional
 
 	root, err := compiler.Compile(wf, cfg, reg, resolver, eventCtx)
 	if err != nil {
-		return fmt.Errorf("compiling workflow: %w", err)
+		return nil, fmt.Errorf("compiling workflow: %w", err)
 	}
 
-	if _, err := execute(ctx, root, wf); err != nil {
-		return err
+	result, err := execute(ctx, root, wf)
+	if err != nil {
+		logWorkflowFailure(result)
+
+		return result, err
 	}
 
 	slog.Info("workflow completed", "name", wf.Name)
 
-	return nil
+	return result, nil
 }
 
-func execute(ctx context.Context, root agent.Agent, wf *config.Workflow) (string, error) {
+func execute(ctx context.Context, root agent.Agent, wf *config.Workflow) (*WorkflowResult, error) {
 	sessService := session.InMemoryService()
 
 	r, err := runner.New(runner.Config{
@@ -81,26 +92,123 @@ func execute(ctx context.Context, root agent.Agent, wf *config.Workflow) (string
 		AutoCreateSession: true,
 	})
 	if err != nil {
-		return "", fmt.Errorf("creating runner: %w", err)
+		return nil, fmt.Errorf("creating runner: %w", err)
 	}
 
 	msg := genai.NewContentFromText(wf.Steps[0].Prompt, "user")
 
-	var lastOutput string
+	result := newWorkflowResult(wf)
 
 	for event, iterErr := range r.Run(ctx, "user", "run", msg, agent.RunConfig{}) {
 		if iterErr != nil {
-			return "", fmt.Errorf("execution error: %w", iterErr)
+			recordStepFailure(result, iterErr)
+
+			return result, fmt.Errorf("execution error: %w", iterErr)
 		}
 
 		if event == nil || event.Partial {
 			continue
 		}
 
-		lastOutput = extractOutput(event)
+		recordEvent(result, event)
 	}
 
-	return lastOutput, nil
+	finalizeResult(result)
+
+	return result, nil
+}
+
+func newWorkflowResult(wf *config.Workflow) *WorkflowResult {
+	steps := make([]StepResult, 0, len(wf.Steps))
+
+	for _, s := range wf.Steps {
+		steps = append(steps, StepResult{
+			StepID: s.ID,
+			Status: StepStatusPending,
+		})
+	}
+
+	return &WorkflowResult{
+		WorkflowName: wf.Name,
+		Status:       StepStatusRunning,
+		Steps:        steps,
+		StartedAt:    time.Now(),
+	}
+}
+
+func recordEvent(result *WorkflowResult, event *session.Event) {
+	stepID := event.Author
+	if stepID == "" {
+		return
+	}
+
+	step := findStep(result, stepID)
+	if step == nil {
+		return
+	}
+
+	// Mark as running on first event for this step.
+	if step.Status == StepStatusPending {
+		step.Status = StepStatusRunning
+		step.StartedAt = time.Now()
+	}
+
+	output := extractOutput(event)
+	if output != "" {
+		step.Output = output
+		step.Status = StepStatusCompleted
+		step.Duration = time.Since(step.StartedAt)
+	}
+}
+
+func recordStepFailure(result *WorkflowResult, err error) {
+	now := time.Now()
+	result.Status = StepStatusFailed
+	result.Duration = now.Sub(result.StartedAt)
+
+	// Mark the currently running step as failed.
+	for i := range result.Steps {
+		if result.Steps[i].Status != StepStatusRunning {
+			continue
+		}
+
+		result.Steps[i].Status = StepStatusFailed
+		result.Steps[i].Error = err
+		result.Steps[i].ErrorMsg = err.Error()
+		result.Steps[i].Duration = now.Sub(result.Steps[i].StartedAt)
+
+		break
+	}
+
+	// Mark remaining pending steps as skipped.
+	for i := range result.Steps {
+		if result.Steps[i].Status == StepStatusPending {
+			result.Steps[i].Status = StepStatusSkipped
+		}
+	}
+}
+
+func finalizeResult(result *WorkflowResult) {
+	result.Duration = time.Since(result.StartedAt)
+	result.Status = StepStatusCompleted
+
+	for _, step := range result.Steps {
+		if step.Status == StepStatusFailed {
+			result.Status = StepStatusFailed
+
+			break
+		}
+	}
+}
+
+func findStep(result *WorkflowResult, stepID string) *StepResult {
+	for i := range result.Steps {
+		if result.Steps[i].StepID == stepID {
+			return &result.Steps[i]
+		}
+	}
+
+	return nil
 }
 
 func extractOutput(event *session.Event) string {
@@ -123,6 +231,36 @@ func extractOutput(event *session.Event) string {
 	}
 
 	return last
+}
+
+func logWorkflowFailure(result *WorkflowResult) {
+	if result == nil {
+		return
+	}
+
+	failed := result.Failed()
+	if failed == nil {
+		return
+	}
+
+	slog.Error("workflow failed",
+		"workflow", result.WorkflowName,
+		"failed_step", failed.StepID,
+		"error", failed.ErrorMsg,
+		"duration", result.Duration.Truncate(time.Millisecond),
+	)
+
+	completed := result.CompletedSteps()
+	if len(completed) > 0 {
+		names := make([]string, 0, len(completed))
+		for _, s := range completed {
+			names = append(names, s.StepID)
+		}
+
+		slog.Info("partial progress", "completed_steps", names)
+	}
+
+	fmt.Fprintln(os.Stderr, "\n"+result.FormatSummary())
 }
 
 func buildModelResolver(ctx context.Context, cfg *config.Config, options *Options) (compiler.ModelResolver, error) {
