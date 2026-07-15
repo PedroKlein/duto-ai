@@ -68,10 +68,15 @@ func buildEventLayer(ctx *EventContext) string {
 
 	if ctx.Repo != "" {
 		parts = append(parts, "Repository: "+ctx.Repo)
+
+		// Split owner/repo for tool calls
+		if owner, repo, ok := splitRepo(ctx.Repo); ok {
+			parts = append(parts, "Owner: "+owner, "Repo: "+repo)
+		}
 	}
 
 	if ctx.PRNumber > 0 {
-		parts = append(parts, fmt.Sprintf("PR #%d", ctx.PRNumber))
+		parts = append(parts, fmt.Sprintf("PR Number: %d", ctx.PRNumber))
 	}
 
 	if ctx.Author != "" {
@@ -86,7 +91,13 @@ func buildEventLayer(ctx *EventContext) string {
 		return ""
 	}
 
-	return "## Event Context\n" + strings.Join(parts, "\n")
+	return "## Event Context\nUse these values when calling tools:\n" + strings.Join(parts, "\n")
+}
+
+func splitRepo(fullRepo string) (owner, repo string, ok bool) {
+	owner, repo, ok = strings.Cut(fullRepo, "/")
+
+	return owner, repo, ok
 }
 
 func buildContextFilesLayer(files []string) string {

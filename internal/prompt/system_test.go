@@ -32,7 +32,7 @@ func TestBuildSystemPrompt(t *testing.T) {
 			eventCtx: &prompt.EventContext{
 				Repo: "owner/repo", PRNumber: 42, Author: "alice", EventName: "pull_request",
 			},
-			contains: []string{"owner/repo", "PR #42", "alice"},
+			contains: []string{"owner/repo", "PR Number: 42", "alice", "Owner: owner", "Repo: repo"},
 		},
 		{
 			name:     "with user system field",
