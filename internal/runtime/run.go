@@ -22,6 +22,7 @@ import (
 	"github.com/PedroKlein/duto-ai/internal/tool/git"
 	gh "github.com/PedroKlein/duto-ai/internal/tool/github"
 	"github.com/PedroKlein/duto-ai/internal/tool/shell"
+	"github.com/PedroKlein/duto-ai/internal/tool/web"
 )
 
 // Run executes a duto-ai workflow end-to-end using ADK's native workflow engine.
@@ -199,6 +200,11 @@ func buildRegistry(options *Options) (*tool.Registry, error) {
 	// Register shell tool.
 	if err := shell.RegisterAll(reg, repoRoot); err != nil {
 		return nil, fmt.Errorf("registering shell tools: %w", err)
+	}
+
+	// Register web tools.
+	if err := web.RegisterAll(reg); err != nil {
+		return nil, fmt.Errorf("registering web tools: %w", err)
 	}
 
 	return reg, nil
