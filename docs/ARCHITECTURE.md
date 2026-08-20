@@ -1,351 +1,143 @@
-# duto-ai — Architecture & Implementation Decisions
+# Architecture
 
-This document captures all architectural decisions made during the design phase.
-It serves as the implementation reference for building duto-ai.
+This document explains the v0.2.2 implementation. It describes shipped behavior, not the deferred extensibility roadmap.
 
-## Package Layout
+## System boundary
 
-```
-cmd/
-  duto-ai/
-    main.go                    # CLI entry (run, version)
+duto-ai is a process-level runtime. The surrounding pipeline owns triggers, checkout, secrets, token permissions, and runner isolation.
 
-internal/
-  config/                      # Parse config.yaml + workflow YAML
-    config.go                  # Global config struct + loader
-    workflow.go                # Workflow definition struct + loader
-    step.go                    # Step schema types
-    resolve.go                 # Model alias resolution
-    validate.go                # Schema validation (required fields, circular deps)
-
-  compiler/                    # YAML steps → ADK v2 workflowagent.New
-    compiler.go                # Compile(workflow, config, registry, llm) → agent.Agent
-    node.go                    # Step → AgentNode builder (wires model, tools, instruction)
-
-  prompt/                      # System prompt assembly + event context
-    system.go                  # Instruction builder (metadata + event ctx + context files + skills)
-    context.go                 # GHA event context extraction (env vars → structured data)
-
-  tool/                        # Tool registry + whitelist resolution
-    registry.go                # Global catalog registration (name → tool.Tool)
-    resolve.go                 # Glob matching (github.*, github.read-*), merge defaults + step tools
-    adk_toolset.go             # ADK Toolset adapter for resolved tools
-    github/                    # github.* tool implementations
-      tools.go                 # functiontool.New wrappers + RegisterAll
-      read.go                  # read-pr, read-diff, list-changed-files
-      write.go                 # post-review, post-comment, add-labels
-      client.go                # Shared GitHub HTTP client (GITHUB_TOKEN auth)
-
-  provider/                    # Provider factory from config
-    factory.go                 # config.provider → model.LLM (dispatches to sapaicore)
-
-  runtime/                     # Orchestrates the full run: load → compile → execute
-    run.go                     # Run(configPath, workflowPath) → compiler.Compile + runner.Run
-    options.go                 # Functional options for DI (WithLLM, WithGitHubBaseURL)
-
-  testing/
-    mockllm/                   # Reusable mock model.LLM for tests
-
-smoketest/                     # E2E tests with real AI Core + mock GitHub
+```text
+GitHub Actions or local CLI
+  -> duto-ai run
+     -> load config and workflow YAML
+     -> validate and compile an ADK workflow graph
+     -> execute one ADK runner
+     -> call whitelisted tools
+     -> emit structured results and side effects
 ```
 
-### Design Principles
+The CLI can run anywhere its binary and provider credentials are available. The packaged composite Action currently supports Linux and macOS runners on AMD64 and ARM64.
 
-- **`config/` is pure parsing** — no side effects, no network calls. Testable with YAML fixtures.
-- **`compiler/` is the heart** — transforms declarative YAML into ADK's imperative graph.
-- **`tool/` is a flat registry** — each tool is a `functiontool.New()`. Glob matching over registry keys.
-- **`prompt/` handles all text assembly** — system prompt layering and Go template rendering.
-- **`runtime/` is the thin orchestrator** — wires everything together, executes the workflow.
+## Modules
 
----
+### `internal/config`
 
-## DAG Compilation Strategy
+Defines and loads the global configuration and workflow schema. Environment variables are expanded before global configuration parsing. Workflow validation covers empty workflows, duplicate IDs, missing dependencies, cycles, timeouts, and iteration limits.
 
-### Mapping: YAML → ADK v2 Workflow
+Model aliases map user-facing names to provider model names.
 
-| YAML Concept | ADK v2 Concept |
+Known limitation: unknown YAML fields, unknown tools, and unmatched tool globs are not strict validation errors in v0.2.2.
+
+### `internal/compiler`
+
+Transforms validated steps into ADK nodes and edges.
+
+| Workflow field | ADK behavior |
 |---|---|
-| Step | `AgentNode` wrapping an `llmagent.New(ModeSingleTurn)` |
-| `needs: [gather]` | `EdgeBuilder.Add(gatherNode, thisNode)` |
-| Step with no `needs` | `EdgeBuilder.Add(workflow.Start, thisNode)` |
-| Multiple `needs` | `JoinNode` fan-in barrier + edge to step node |
-| `output` field | `OutputKey` → session state |
-| Parallel steps (no mutual deps) | Multiple edges from `Start` → ADK scheduler runs concurrently |
-| Entire workflow | `workflowagent.New` → `agent.Agent` (root for runner) |
+| step | `AgentNode` wrapping a `llmagent` |
+| `needs` | directed edge from predecessor to successor |
+| multiple `needs` | ADK fan-in handling |
+| no `needs` | edge from workflow start |
+| `model` | model resolver lookup |
+| `tools` | per-step ADK toolset |
+| `max_iterations` | before-model iteration limiter |
+| `timeout` | node timeout |
+| `retry` | node retry configuration |
+| `output` present | ADK `OutputKey` at `steps.<id>.output` |
 
-### Compilation Algorithm
+A step prompt becomes part of the agent instruction. `.md` and `.txt` values are loaded as files. Event and environment templates render before execution.
 
-1. Parse steps → validate (unique IDs, no cycles via topological sort)
-2. For each step: create `llmagent.New(ModeSingleTurn)` with instruction, model, tools
-3. Wrap each agent in `workflow.NewAgentNode`
-4. Build edges via `workflow.NewEdgeBuilder` (handles fan-in with JoinNodes)
-5. Create `workflowagent.New(edges, subAgents)` → returns `agent.Agent`
-6. Caller runs via `runner.New(agent) + runner.Run()` (single call)
+ADK passes predecessor output to successor nodes. v0.2.2 does not implement public named or typed outputs. The text supplied in `output:` only enables storage.
 
-### Output Passing Between Steps
+### `internal/prompt`
 
-**Decision: ADK native workflow output passing**
+Builds each step instruction from these layers:
 
-ADK's workflow engine passes each node's output as the input to successor nodes
-automatically. Sequential steps receive predecessor output as their `input` parameter.
-JoinNodes aggregate multiple predecessors into a `map[string]any`.
+1. Step metadata and available tool names
+2. Pipeline event context
+3. Configured context files
+4. Resolved skill files
+5. Step `system` text and task prompt
 
-The step's `prompt` field becomes part of the `Instruction` (system prompt).
-Go template expressions (`{{ .Steps.X.Output }}`) are stripped at compile time
-and replaced with `[previous step output]` since ADK delivers the actual data.
+Skills are discovered under `.github/ai-workflows/skills/` and may also be referenced by path.
 
----
+### `internal/provider`
 
-## Tool System
+Constructs the bundled provider and resolves a `model.LLM` for each configured model name. Runtime model instances are cached by resolved model name for the duration of one workflow run.
 
-### Registry Design
+The provider seam is internal in v0.2.2. Adding another provider requires code changes. `model_config.temperature` and `max_tokens` reach ADK generation config; `model_config.extra` is parsed but not forwarded.
 
-```go
-type Registry struct {
-    tools map[string]tool.Tool  // "github.read-pr" → concrete tool
-}
+### `internal/tool`
 
-func (r *Registry) Register(name string, t tool.Tool)
-func (r *Registry) Resolve(patterns []string) ([]tool.Tool, error)  // glob matching
-func (r *Registry) Toolset(patterns []string) tool.Toolset          // wraps as ADK Toolset
+The registry maps a dot-namespaced name to an ADK tool. Glob resolution uses `path.Match`. Resolved tools are sorted for deterministic model declarations.
+
+Tool list behavior:
+
+```text
+step tools omitted    -> configured defaults
+step tools []         -> no tools
+step tools non-empty  -> configured defaults plus step tools
 ```
 
-### Whitelist Merge Logic
+Registered namespaces:
 
-Per CONTEXT.md:
+- `github.*`: 15 read/write GitHub operations
+- `files.*`: read, find, grep
+- `git.*`: log, blame, show, diff
+- `shell.*`: command execution
+- `web.*`: fetch and request
 
-```go
-func resolveTools(defaults []string, stepTools *[]string) []string {
-    switch {
-    case stepTools == nil:      return defaults                    // omitted → defaults only
-    case len(*stepTools) == 0:  return nil                        // explicit [] → no tools
-    default:                    return append(defaults, *stepTools...)  // additive
-    }
-}
-```
+The exact catalog is maintained in `README.md` and the package `RegisterAll` functions.
 
-### Glob Matching
+### `internal/runtime`
 
-- `github.*` → all tools where `strings.HasPrefix(name, "github.")`
-- `github.read-*` → `path.Match("github.read-*", name)`
-- `*` → everything in registry
+Coordinates loading, provider construction, registry assembly, compilation, ADK runner setup, event collection, and result formatting.
 
-### Integration with ADK
+The runtime uses an in-memory ADK session service. State lasts for one invocation. Errors fail the workflow and mark pending steps as skipped. Completed-step output remains available in the returned partial result.
 
-- Each step gets a `dutoToolset` implementing `tool.Toolset`
-- Returns only the resolved tools for that step
-- Wired via `llmagent.Config{Toolsets: []tool.Toolset{stepToolset}}`
+## Results and GitHub integration
 
-### MVP Tool Catalog
+`RunWithResult` returns workflow and step statuses, outputs, durations, and failure details. The CLI formats the result as text, JSON, or Markdown.
 
-**Read tools:**
-- `github.read-pr` — PR metadata (title, body, author, labels, base/head)
-- `github.read-diff` — Full diff patch
-- `github.list-changed-files` — List of changed files with status
-- `files.read` — Read local file content
+Inside GitHub Actions it also writes:
 
-**Write tools:**
-- `github.post-review` — Post PR review with inline comments
-- `github.post-comment` — Post a general PR comment
-- `github.add-labels` — Add labels to PR
+- `status`, `workflow`, `duration_ms`, and `failed_step` to `GITHUB_OUTPUT`
+- the Markdown report to `GITHUB_STEP_SUMMARY`
 
----
+The composite Action maps these values to its public outputs.
 
-## Provider Integration
+## Security model
 
-### Factory Pattern
+Tool visibility is a capability boundary for the model. It is not process isolation.
 
-```go
-func NewLLM(cfg config.Provider, modelName string) (model.LLM, error) {
-    switch cfg.Type {
-    case "ai-core":
-        return sapaicore.New(
-            sapaicore.WithURL(cfg.Config["url"]),
-            sapaicore.WithResourceGroup(cfg.Config["resource_group"]),
-            // ... functional options from config map
-        )
-    default:
-        return nil, fmt.Errorf("unsupported provider type %q", cfg.Type)
-    }
-}
-```
+- File operations reject paths outside the configured root.
+- Git read operations execute with the repository root as cwd.
+- Shell commands can access anything the runner account can access.
+- Web tools can reach anything available through the runner network.
+- GitHub writes are limited by the token's repository permissions.
 
-### Model Alias Resolution
+Pipeline authors must treat workflow files as code, use least-privilege tokens, and avoid exposing shell, network, or write tools to untrusted pull-request content. See `SECURITY.md`.
 
-```go
-func resolveModel(stepModel string, aliases map[string]string) string {
-    if resolved, ok := aliases[stepModel]; ok {
-        return resolved
-    }
-    return stepModel  // pass as-is
-}
-```
+## Testing
 
-### Per-Step model_config
-
-- `temperature`, `max_tokens` → `genai.GenerateContentConfig`
-- `extra` → provider-specific pass-through (sapaicore's `WithExtraParams`)
-
-### MVP Provider
-
-- AI Core only via `adk-provider-sapaicore` (orchestration mode)
-- Interface is ready for future providers (openai, anthropic, openai-compatible)
-
----
-
-## Testing Strategy
-
-### Three-Tier Approach
-
-| Tier | Build Tag | What It Proves |
+| Tier | Command | Boundary |
 |---|---|---|
-| **Unit** | (default) | Parsing, compilation, glob resolution, template rendering — deterministic, no I/O |
-| **Integration** | `-tags=integration` | Full pipeline with mock LLM — graph execution, output passing, tool dispatch, fail-fast |
-| **Smoke** | `-tags=smoke` | Full pipeline with real AI Core LLM + httptest fake GitHub — agentic loop works end-to-end |
+| Unit | `mise run test` | parsing, graph compilation, tools, formatting |
+| Integration | `mise run integration` | full ADK graph with a mock model |
+| Smoke | `mise run smoke` | live model with a fake GitHub API |
+| Live scenarios | duto-test Actions workflow | released binary in a real pipeline |
 
-### Smoke Test Architecture
+`mise run check` runs build, vet, lint, and race tests. Live acceptance runs after deterministic checks.
 
-```
-Real AI Core LLM  +  httptest server (fake GitHub API)  +  faked GHA env vars
-         │                        │                              │
-         └────────────────────────┼──────────────────────────────┘
-                                  ▼
-                    duto-ai runtime (full pipeline)
-```
+## Deferred design work
 
-**What's faked:**
-- `GITHUB_TOKEN` → any string (mock server doesn't validate)
-- `GITHUB_EVENT_PATH` → local `testdata/event.json`
-- `GITHUB_REPOSITORY`, `GITHUB_EVENT_NAME`, etc. → set in test
-- GitHub API → httptest server with canned responses
-- GHA environment → env vars set in test setup
+The `duto-ai-extensibility` plan owns the next architecture decisions:
 
-**What's real:**
-- AI Core LLM — validates reasoning, tool selection, argument formatting
-- Full duto-ai pipeline — config → compile → execute → tool calls → output
+- provider registration and additional adapters
+- custom tool registration and capability metadata
+- strict config and tool validation
+- named and typed outputs
+- repository mutation, search, and dependency-security tools
+- execution-context trust policy
 
-**Smoke test assertions:**
-- ✓ LLM called read-pr, read-diff tools (correct tool selection)
-- ✓ Step outputs are non-empty and passed to downstream steps
-- ✓ LLM called post-review with valid body (correct write arguments)
-- ✓ Review payload has correct PR number, inline comment structure
-- ✓ No errors, completed within timeout
-
-### Test Fixtures
-
-```
-smoketest/
-  testdata/
-    config.yaml              # Points provider to real AI Core, GitHub URL to httptest
-    pr-review.yaml           # The 3-step workflow
-    event.json               # Fake GHA PR event
-    fixtures/
-      pr.json                # GET /repos/:owner/:repo/pulls/:number
-      diff.patch             # GET .../pulls/:number.diff
-      files.json             # GET .../pulls/:number/files
-      file_content.go        # Raw file for files.read
-```
-
-### Golden Files
-
-- `testdata/golden/system-prompt-gather.txt` — expected system prompt for a known config
-- Catches regressions in prompt layering without needing an LLM
-
-### mise Tasks
-
-```toml
-[tasks.smoke]
-run = "go test -tags=smoke ./smoketest/ -v -timeout=5m"
-
-[tasks.integration]
-run = "go test -tags=integration ./... -v -timeout=2m"
-```
-
----
-
-## MVP Scope
-
-### IN (first implementation)
-
-| Component | What's Included |
-|---|---|
-| CLI | `duto-ai run [--config path] workflow.yaml` |
-| Config parsing | Full schema, `${ENV_VAR}` expansion, model aliases |
-| Workflow parsing | Steps + needs + all Step Schema fields |
-| DAG compiler | Full compilation to ADK v2 workflow graph |
-| Prompt system | Go template rendering + 5-layer system prompt assembly |
-| Tool registry | Registry + glob resolution + whitelist merge |
-| Tools (read) | `github.read-pr`, `github.read-diff`, `github.list-changed-files`, `files.read` |
-| Tools (write) | `github.post-review`, `github.post-comment`, `github.add-labels` |
-| Provider | AI Core via `adk-provider-sapaicore` (orchestration mode) |
-| Runtime | Full run loop with fail-fast error propagation |
-| Example | `pr-review.yaml` (gather → analyze → report) |
-| Tests | Unit + integration + smoke (3-tier) |
-
-### OUT (deferred)
-
-| Deferred | Reason |
-|---|---|
-| `action.yml` + GoReleaser | Distribution concern — CLI works first |
-| `git.*` tools | Not needed for basic PR review |
-| `web.*`, `shell.*`, `security.*` tools | Post-MVP categories |
-| `files.write`, `files.find`, `files.grep` | Read-only first |
-| Multiple providers (openai, anthropic) | AI Core first; interface ready |
-| Context files injection | Nice-to-have, system prompt works without |
-| Skills resolution | Behavioral .md injection — second PR |
-| Retry/fallback | Explicitly excluded per design |
-| Structured logging (levels) | Default to info; structured logging later |
-
-### Validation Criteria
-
-```bash
-export GITHUB_TOKEN=...
-export AI_CORE_AUTH_URL=... AI_CORE_CLIENT_ID=... AI_CORE_CLIENT_SECRET=... AI_CORE_BASE_URL=...
-
-duto-ai run --config .github/ai-workflows/config.yaml .github/ai-workflows/pr-review.yaml
-# → reads PR diff, analyzes it, posts inline review comments
-```
-
----
-
-## Code Style
-
-Cherry-picked from `adk-provider-sapaicore`:
-
-- **Copied verbatim:** `.golangci.yaml`, `.gitignore`, `mise.toml`, CI workflow, `CONTRIBUTING.md`
-- **Go version:** 1.25
-- **Linting:** golangci-lint v2.12.2 with strict config (wsl_v5, errorlint, wrapcheck, funcorder, exhaustive, testpackage)
-- **Patterns:** functional options, consumer-defined interfaces, internal/ packages
-- **Error wrapping:** lowercase, no "failed" prefix, `%w` for chain preservation
-- **Gate:** `mise run check` (build + vet + lint + test) must pass before any commit
-
----
-
-## Key Dependencies
-
-- `google.golang.org/adk/v2` — Agent runtime (workflow engine, llmagent, tool interfaces)
-- `github.com/PedroKlein/adk-provider-sapaicore` — SAP AI Core model provider
-- `gopkg.in/yaml.v3` — YAML parsing
-- Standard library: `text/template`, `path`, `net/http`, `os`
-
----
-
-## Credentials & Local Development
-
-duto-ai shares the same SAP AI Core instance as `adk-provider-sapaicore`.
-The `.env` file is identical — copy it directly:
-
-```bash
-cp ../adk-provider-sapaicore/.env .env
-```
-
-Required env vars for smoke tests:
-- `AI_CORE_ENDPOINT` — SAP AI Core API endpoint
-- `AI_CORE_CLIENT_ID` — OAuth2 client ID
-- `AI_CORE_CLIENT_SECRET` — OAuth2 client secret
-- `AI_CORE_AUTH_URL` — OAuth2 token endpoint
-- `AI_CORE_RESOURCE_GROUP` — Resource group (orchestration mode)
-
-mise loads `.env` automatically via `[env] _.file = ".env"` in `mise.toml`.
-
-See [docs/DEVELOPMENT.md](./DEVELOPMENT.md) for full setup instructions.
+Those designs are gated by ranked use cases. This document should not describe them as shipped until their acceptance criteria pass.

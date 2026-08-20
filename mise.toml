@@ -2,7 +2,7 @@
 _.file = ".env"
 
 [tools]
-go = "1.25"
+go = "1.26.4"
 golangci-lint = "2.12.2"
 
 [tasks.build]
@@ -30,7 +30,7 @@ description = "Run all checks (build + vet + lint + test)"
 depends = ["build", "vet", "lint", "test"]
 
 [tasks.smoke]
-description = "Run smoke tests against real SAP AI Core"
+description = "Run smoke tests against the configured live provider"
 run = "go test -tags=smoke ./smoketest/ -v -timeout=5m"
 
 [tasks.integration]

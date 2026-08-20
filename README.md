@@ -1,92 +1,44 @@
 # duto-ai
 
-Composable AI building blocks for CI/CD pipelines.
+Composable AI workflow steps for CI pipelines.
 
-**duto-ai** is a Go binary powered by [ADK Go v2](https://github.com/google/adk-go) that provides a standard runtime for adding AI to CI pipelines. Define deterministic execution graphs in YAML; the AI fills in the reasoning at each step. Model-agnostic, pipeline-agnostic, with fine-grained tool control.
+`duto-ai` compiles a YAML workflow into an [ADK Go v2](https://github.com/google/adk-go) execution graph. The workflow controls step order, model selection, tool access, retries, and timeouts. The model handles the reasoning inside each step.
 
-## Why duto-ai?
+Current release: **v0.2.2**
 
-There's no standard way for teams to add structured AI workflows to their CI/CD pipelines. Existing solutions are either opinionated single-purpose tools or give the AI full autonomy with minimal structure.
+## What works today
 
-duto-ai takes a different approach: **you define the execution graph, the AI reasons within each node**. This gives you:
+- Sequential and parallel DAG execution through `steps` and `needs`
+- An isolated ADK agent for each step
+- Per-step model selection and generation settings
+- Explicit tool whitelists with namespace globs
+- Prompt files, context files, skills, and template variables
+- Retry, timeout, and iteration limits
+- Text, JSON, Markdown, file, and GitHub step-summary output
+- GitHub Action and local CLI execution
+- One bundled model-provider adapter
 
-- **Predictability** — deterministic DAG execution, isolated steps, no hidden state
-- **Security** — per-step tool whitelisting with dot-namespaced tools and glob patterns
-- **Flexibility** — any LLM provider (SAP AI Core, OpenAI, Anthropic, self-hosted)
-- **Familiarity** — YAML workflows with `steps:` and `needs:`, just like GitHub Actions
+Provider registration, custom tools, typed outputs, and additional provider adapters are not public extension points in v0.2.2.
 
-## Quick Start
+## Quick start
 
-```yaml
-# .github/workflows/ai-review.yml
-name: AI PR Review
-on:
-  pull_request:
-    types: [opened, synchronize]
+### 1. Add the provider configuration
 
-jobs:
-  review:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: PedroKlein/duto-ai@v0
-        with:
-          workflow: .github/ai-workflows/pr-review.yaml
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AI_CORE_CLIENT_ID: ${{ secrets.AI_CORE_CLIENT_ID }}
-          AI_CORE_CLIENT_SECRET: ${{ secrets.AI_CORE_CLIENT_SECRET }}
-          AI_CORE_ENDPOINT: ${{ secrets.AI_CORE_ENDPOINT }}
-```
-
-## Workflow Definition
+Copy `.github/ai-workflows/config.yaml` into your repository. Replace the example model names and provide the referenced secrets as environment variables.
 
 ```yaml
-# .github/ai-workflows/pr-review.yaml
-name: PR Code Review
-
-steps:
-  - id: gather
-    model: light
-    tools: [github.read-pr, github.read-diff, github.list-changed-files]
-    prompt: |
-      Read the PR metadata and diff using the available tools.
-      Summarize what this PR changes.
-    output: context
-
-  - id: analyze
-    needs: [gather]
-    model: heavy
-    skills: [security-analysis]
-    prompt: |
-      Analyze the PR changes for security, performance, and convention issues.
-      Identify specific problems with line references.
-    output: findings
-
-  - id: report
-    needs: [analyze]
-    model: medium
-    tools: [github.post-review, github.post-comment, github.add-labels]
-    prompt: |
-      Post findings as inline review comments using the github.post-review tool.
-```
-
-Each step receives its predecessor's output automatically via ADK's workflow engine.
-Steps with no mutual `needs:` run in **parallel** automatically.
-
-## Global Config
-
-```yaml
-# .github/ai-workflows/config.yaml
 provider:
   type: ai-core
   config:
-    resource_group: ${AI_CORE_RESOURCE_GROUP}
+    endpoint: ${DUTO_PROVIDER_ENDPOINT}
+    resource_group: ${DUTO_PROVIDER_RESOURCE_GROUP}
+    client_id: ${DUTO_PROVIDER_CLIENT_ID}
+    client_secret: ${DUTO_PROVIDER_CLIENT_SECRET}
+    auth_url: ${DUTO_PROVIDER_AUTH_URL}
 
 models:
-  light: gpt-4.1-mini
-  medium: gpt-4.1
-  heavy: claude-sonnet-4
+  light: example-small-model
+  medium: example-medium-model
 
 defaults:
   model: medium
@@ -94,94 +46,192 @@ defaults:
     temperature: 0.2
     max_tokens: 4096
   tools:
-    - github.read-diff
     - github.read-pr
+    - github.read-diff
     - github.list-changed-files
-    - files.read
-    - files.find
-    - files.grep
-
-context_files:
-  - AGENTS.md
-  - CONTEXT.md
 ```
 
-## Tool System
+The environment variable names are user-defined. They are expanded before the configuration is parsed.
 
-Tools are dot-namespaced (`category.action`) and whitelisted per step:
+### 2. Define a workflow
 
-| Namespace | Examples |
-|-----------|----------|
-| `github.*` | `read-diff`, `read-pr`, `post-review`, `add-labels`, `merge-pr` |
-| `git.*` | `log`, `blame`, `show`, `diff`, `commit` |
-| `files.*` | `read`, `write`, `find`, `grep` |
-| `web.*` | `search`, `fetch`, `request` |
-| `security.*` | `search-vulnerabilities`, `check-dependencies` |
-| `shell.*` | `run` (sandboxed: timeout + cwd lock) |
+Create `.github/ai-workflows/pr-review.yaml`:
 
-Glob patterns supported: `github.*`, `github.read-*`, `files.*`, `*`.
+```yaml
+name: PR review
 
-## Key Design Decisions
+steps:
+  - id: gather
+    model: light
+    tools:
+      - github.read-pr
+      - github.read-diff
+      - github.list-changed-files
+    prompt: |
+      Read the pull request and summarize the change.
+    output: context
 
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Runtime | ADK Go v2 | Graph-based workflows, multi-agent, model-agnostic |
-| Distribution | Composite action + pre-built binary | ~200ms startup, GHA tool cache |
-| Triggering | None — GHA/pipeline owns it | Runtime-agnostic |
-| Step isolation | Fully isolated (fresh context each) | Predictable cost and behavior |
-| Step execution | Agentic loop (with hard limits) | Powerful but bounded |
-| Outputs | Always text (strings) | Simple; typed outputs deferred |
-| Failure | Fail-fast (whole workflow aborts) | Predictable, auditable |
-| Provider contract | ADK's `model.LLM` interface | Plug any provider |
-| Tool permissions | Configurable defaults + per-step whitelist | Security + convenience |
+  - id: review
+    needs: [gather]
+    model: medium
+    tools: []
+    prompt: |
+      Review the preceding step output for correctness and security issues.
+    output: findings
 
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────┐
-│  Pipeline Runtime (GHA, GitLab, local CLI)            │
-│  provides: event context, secrets, env vars           │
-└───────────────────┬──────────────────────────────────┘
-                    │
-                    ▼
-┌──────────────────────────────────────────────────────┐
-│  duto-ai binary                                       │
-│  ┌────────────────────────────────────────────────┐  │
-│  │ YAML Parser → DAG Compiler → ADK v2 Graph      │  │
-│  │                                                 │  │
-│  │ ┌─────────┐    ┌─────────┐    ┌─────────┐     │  │
-│  │ │ Step 1  │───▶│ Step 2  │───▶│ Step 3  │     │  │
-│  │ │(gather) │    │(analyze)│    │(report) │     │  │
-│  │ └─────────┘    └─────────┘    └─────────┘     │  │
-│  │  model: light   model: heavy   model: medium   │  │
-│  │  tools: [...]   tools: [...]   tools: [...]    │  │
-│  └────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────┘
+  - id: report
+    needs: [review]
+    tools:
+      - github.post-review
+    prompt: |
+      Post the findings as a pull request review.
 ```
 
-## File Layout
+ADK passes predecessor output to successor steps. In v0.2.2, `output` enables step output storage, but its value is not yet a user-addressable output name.
 
-```
-.github/
-  ai-workflows/
-    config.yaml          # Global config (provider, models, defaults)
-    pr-review.yaml       # Workflow definition
-    issue-triage.yaml    # Another workflow
-    prompts/             # Prompt template .md files
-      gather-context.md
-    skills/              # Behavioral .md files (reusable expertise)
-      code-review.md
-      security-analysis.md
+### 3. Run it from GitHub Actions
+
+Create `.github/workflows/ai-review.yaml`:
+
+```yaml
+name: AI review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PedroKlein/duto-ai@v0.2.2
+        with:
+          workflow: .github/ai-workflows/pr-review.yaml
+          config: .github/ai-workflows/config.yaml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DUTO_PROVIDER_ENDPOINT: ${{ secrets.DUTO_PROVIDER_ENDPOINT }}
+          DUTO_PROVIDER_RESOURCE_GROUP: ${{ secrets.DUTO_PROVIDER_RESOURCE_GROUP }}
+          DUTO_PROVIDER_CLIENT_ID: ${{ secrets.DUTO_PROVIDER_CLIENT_ID }}
+          DUTO_PROVIDER_CLIENT_SECRET: ${{ secrets.DUTO_PROVIDER_CLIENT_SECRET }}
+          DUTO_PROVIDER_AUTH_URL: ${{ secrets.DUTO_PROVIDER_AUTH_URL }}
 ```
 
-## Local Development
+Pin the Action to an exact release. The repository does not currently publish a moving `v0` tag.
+
+## CLI
+
+```text
+duto-ai run [flags] workflow.yaml
+duto-ai version
+```
+
+Run a local validation without calling a model:
 
 ```bash
-# Test a workflow locally with a mock event
-duto-ai run --event event.json .github/ai-workflows/pr-review.yaml
+duto-ai run --dry-run \
+  --config .github/ai-workflows/config.yaml \
+  .github/ai-workflows/pr-review.yaml
 ```
 
-## Related
+Important `run` flags:
 
-- [`adk-provider-sapaicore`](https://github.com/PedroKlein/adk-provider-sapaicore) — ADK Go model provider for SAP AI Core
-- [ADK Go v2](https://github.com/google/adk-go) — The agent runtime powering duto-ai
+| Flag | Default | Description |
+|---|---:|---|
+| `--config` | `.github/ai-workflows/config.yaml` | Global configuration path |
+| `--repo` | environment | Repository override in `owner/repo` form |
+| `--pr` | environment | Pull request number override |
+| `--event` | environment | Event JSON file override |
+| `--dry-run` | `false` | Validate and print the execution plan |
+| `--log-level` | `info` | `debug`, `info`, `warn`, or `error` |
+| `--verbose` | `false` | Enable debug logging |
+| `--output-format` | `text` | `text`, `json`, or `markdown` |
+| `--output-file` | empty | Also write formatted output to a file |
+
+## Workflow fields
+
+| Field | Required | Description |
+|---|---:|---|
+| `name` | yes | Workflow name |
+| `steps` | yes | One or more workflow steps |
+| `steps[].id` | yes | Unique step ID |
+| `steps[].needs` | no | Predecessor step IDs |
+| `steps[].model` | no | Model alias or model name |
+| `steps[].model_config` | no | `temperature` and `max_tokens` overrides |
+| `steps[].tools` | no | Tools added to defaults; `[]` disables all tools |
+| `steps[].skills` | no | Skill names or Markdown file paths |
+| `steps[].system` | no | Additional system instruction |
+| `steps[].prompt` | yes | Inline prompt or `.md`/`.txt` path |
+| `steps[].output` | no | Enables output storage for the step |
+| `steps[].max_iterations` | no | Agent-loop limit; default `25` |
+| `steps[].timeout` | no | Step timeout; default `300s` |
+| `steps[].retry` | no | Transient-error retry settings |
+
+Known v0.2.2 contract limits:
+
+- The workflow-level `config` field is parsed but the CLI or Action config path controls the loaded file.
+- `model_config.extra` is parsed but not forwarded to the provider.
+- Output values are strings, and declared output names are not available to templates.
+- Unknown tool names and unmatched globs are currently ignored.
+
+## Tool catalog
+
+Tools are available only when defaults or the current step whitelist them.
+
+### GitHub
+
+- Read: `github.read-issue`, `github.read-pr`, `github.read-diff`, `github.list-changed-files`, `github.read-comments`, `github.read-reviews`, `github.read-checks`, `github.search-issues`
+- Write: `github.post-review`, `github.post-comment`, `github.add-labels`, `github.create-issue`, `github.edit-issue`, `github.merge-pr`, `github.request-reviewers`
+
+### Repository files and history
+
+- `files.read`, `files.find`, `files.grep`
+- `git.log`, `git.blame`, `git.show`, `git.diff`
+
+### Process and network
+
+- `shell.run`
+- `web.fetch`, `web.request`
+
+Glob patterns such as `github.*`, `github.read-*`, `files.*`, and `*` are supported.
+
+## Security model
+
+Tool whitelisting limits what the model can call. It is not an operating-system sandbox.
+
+- `shell.run` executes an arbitrary shell command with a fixed working directory and timeout.
+- `web.fetch` and `web.request` can access network locations reachable from the runner.
+- GitHub write tools use the permissions granted to `GITHUB_TOKEN`.
+- Workflow files and enabled tools must be treated as trusted code.
+- Do not expose write, network, or shell tools to workflows originating from untrusted pull requests.
+
+Grant the job only the GitHub permissions required by its selected tools. See [SECURITY.md](SECURITY.md) for reporting and deployment guidance.
+
+## Action inputs and outputs
+
+The composite Action supports Linux and macOS runners on AMD64 and ARM64.
+
+Inputs: `workflow`, `config`, `log-level`, `output-format`, `output-file`, `verbose`, and `version`.
+
+Outputs: `status`, `workflow`, `duration-ms`, and `failed-step`.
+
+The Action downloads the requested release into `RUNNER_TEMP`, verifies it against `checksums.txt`, and adds the versioned directory to `GITHUB_PATH`.
+
+## Development
+
+```bash
+mise install
+mise run check
+mise run integration
+```
+
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the complete command list and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for implementation details.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).

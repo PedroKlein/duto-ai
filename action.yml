@@ -11,11 +11,11 @@ inputs:
     description: "Path to the workflow YAML file"
     required: true
   config:
-    description: "Path to config.yaml (default: .github/ai-workflows/config.yaml)"
+    description: "Path to config.yaml"
     required: false
     default: ".github/ai-workflows/config.yaml"
   log-level:
-    description: "Log level: debug, info, or error"
+    description: "Log level: debug, info, warn, or error"
     required: false
     default: "info"
   output-format:
@@ -31,9 +31,23 @@ inputs:
     required: false
     default: "false"
   version:
-    description: "duto-ai version to use (default: latest)"
+    description: "duto-ai release to install"
     required: false
     default: "latest"
+
+outputs:
+  status:
+    description: "Workflow status"
+    value: ${{ steps.run.outputs.status }}
+  workflow:
+    description: "Workflow name"
+    value: ${{ steps.run.outputs.workflow }}
+  duration-ms:
+    description: "Workflow duration in milliseconds"
+    value: ${{ steps.run.outputs.duration_ms }}
+  failed-step:
+    description: "Failed step ID, when the workflow fails"
+    value: ${{ steps.run.outputs.failed_step }}
 
 runs:
   using: "composite"
@@ -41,34 +55,75 @@ runs:
     - name: Determine version
       id: version
       shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
+        set -euo pipefail
+
         if [ "${{ inputs.version }}" = "latest" ]; then
-          VERSION=$(curl -s https://api.github.com/repos/PedroKlein/duto-ai/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+          VERSION=$(curl -fsSL --retry 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/PedroKlein/duto-ai/releases/latest \
+            | grep -m1 '"tag_name"' \
+            | cut -d'"' -f4)
         else
           VERSION="${{ inputs.version }}"
         fi
+
+        if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "Invalid duto-ai version: $VERSION" >&2
+          exit 1
+        fi
+
         echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
     - name: Setup duto-ai
       shell: bash
       run: |
+        set -euo pipefail
+
         VERSION="${{ steps.version.outputs.version }}"
         OS=$(uname -s | tr '[:upper:]' '[:lower:]')
         ARCH=$(uname -m)
         case "$ARCH" in
           x86_64) ARCH="amd64" ;;
           aarch64|arm64) ARCH="arm64" ;;
+          *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
+        esac
+        case "$OS" in
+          linux|darwin) ;;
+          *) echo "Unsupported operating system: $OS" >&2; exit 1 ;;
         esac
 
-        URL="https://github.com/PedroKlein/duto-ai/releases/download/${VERSION}/duto-ai_${OS}_${ARCH}.tar.gz"
-        echo "Downloading duto-ai ${VERSION} for ${OS}/${ARCH}..."
+        ASSET="duto-ai_${OS}_${ARCH}.tar.gz"
+        RELEASE_URL="https://github.com/PedroKlein/duto-ai/releases/download/${VERSION}"
+        INSTALL_DIR="${RUNNER_TEMP}/duto-ai/${VERSION}"
+        ARCHIVE="${RUNNER_TEMP}/${ASSET}"
+        CHECKSUMS="${RUNNER_TEMP}/duto-ai-checksums.txt"
 
-        curl -sL "$URL" | tar xz -C /usr/local/bin duto-ai
-        chmod +x /usr/local/bin/duto-ai
+        mkdir -p "$INSTALL_DIR"
+        echo "Downloading duto-ai ${VERSION} for ${OS}/${ARCH}..."
+        curl -fsSL --retry 3 "${RELEASE_URL}/${ASSET}" -o "$ARCHIVE"
+        curl -fsSL --retry 3 "${RELEASE_URL}/checksums.txt" -o "$CHECKSUMS"
+
+        EXPECTED=$(awk -v asset="$ASSET" '$2 == asset { print $1 }' "$CHECKSUMS")
+        ACTUAL=$(shasum -a 256 "$ARCHIVE" | awk '{ print $1 }')
+        if [ -z "$EXPECTED" ] || [ "$ACTUAL" != "$EXPECTED" ]; then
+          echo "Checksum verification failed for $ASSET" >&2
+          exit 1
+        fi
+
+        tar -xzf "$ARCHIVE" -C "$INSTALL_DIR" duto-ai
+        chmod +x "$INSTALL_DIR/duto-ai"
+        echo "$INSTALL_DIR" >> "$GITHUB_PATH"
 
     - name: Run workflow
+      id: run
       shell: bash
       run: |
+        set -euo pipefail
+
         ARGS=("run")
         ARGS+=("--config" "${{ inputs.config }}")
         ARGS+=("--log-level" "${{ inputs.log-level }}")
@@ -86,5 +141,4 @@ runs:
         fi
 
         ARGS+=("${{ inputs.workflow }}")
-
         duto-ai "${ARGS[@]}"

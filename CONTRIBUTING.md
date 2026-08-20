@@ -1,44 +1,35 @@
 # Contributing
 
-Contributions are welcome! Here's how to get started.
+## Development setup
 
-## Development
-
-This project uses [mise](https://mise.jdx.dev/) for toolchain management. Run `mise install` to get the correct Go and tooling versions.
+Install the toolchain and run the deterministic gates:
 
 ```bash
 mise install
-mise run check  # build + vet + lint + test
+mise run check
+mise run integration
 ```
 
-Or run individual tasks:
-
-```bash
-mise run build
-mise run lint
-mise run test
-mise run integration  # integration tests with mock LLM
-mise run smoke        # smoke tests (requires SAP AI Core credentials)
-```
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for individual commands and smoke-test setup.
 
 ## Submitting changes
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feat/my-feature`)
-3. Make your changes with tests
-4. Ensure all checks pass locally (`mise run check`)
-5. Submit a pull request
+1. Fork the repository.
+2. Create a focused branch using the prefixes in `AGENTS.md`.
+3. Add or update behavior tests.
+4. Run `mise run check` and `mise run integration`.
+5. Open a pull request using a rebase merge.
 
 ## Guidelines
 
-- Follow existing code style (enforced by golangci-lint)
-- Add tests for new functionality
-- Keep PRs focused — one feature or fix per PR
-- Update docs if you change the public API or workflow schema
+- Follow the style enforced by `.golangci.yaml`.
+- Add regression coverage for fixes.
+- Keep each pull request focused on one concern.
+- Update documentation when changing public behavior.
+- Keep examples and fixtures free of credentials, private endpoints, customer names, and internal model identifiers.
 
 ## Reporting bugs
 
-Open an issue with:
-- Go version and OS
-- Minimal reproduction steps
-- Expected vs actual behavior
+Open an issue with the version, operating system, reproduction steps, expected behavior, and actual behavior.
+
+Report security issues privately as described in [SECURITY.md](SECURITY.md).

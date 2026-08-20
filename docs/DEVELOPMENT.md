@@ -1,70 +1,56 @@
-# Development Setup
+# Development
 
 ## Prerequisites
 
-- [mise](https://mise.jdx.dev/) for toolchain management
-- SAP AI Core credentials (for smoke tests)
+- [mise](https://mise.jdx.dev/)
+- Git
+- Credentials for the bundled provider only when running smoke tests
 
-## Quick Start
+## Setup
 
 ```bash
-# Install toolchain
 mise install
-
-# Copy credentials from adk-provider-sapaicore (same AI Core instance)
-cp /path/to/adk-provider-sapaicore/.env .env
-# Or create from template:
-cp .env.example .env
-# Fill in your credentials
-
-# Run all checks
 mise run check
 ```
 
-## Environment Variables
+`mise` installs the Go version declared by the project and the configured linter. Local `.env` files are loaded for smoke-test credentials and are ignored by Git.
 
-duto-ai uses the same AI Core credentials as `adk-provider-sapaicore`.
-If you already have a `.env` for that project, copy it here:
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `mise run build` | Build all packages |
+| `mise run vet` | Run `go vet` |
+| `mise run lint` | Run golangci-lint |
+| `mise run test` | Run unit tests with the race detector |
+| `mise run check` | Run build, vet, lint, and unit tests |
+| `mise run integration` | Run full workflows with a mock model |
+| `mise run smoke` | Run a live model against a fake GitHub API |
+| `mise run coverage` | Generate `coverage.out` and `coverage.html` |
+| `mise run tidy` | Run `go mod tidy` |
+
+Run deterministic checks before smoke tests:
 
 ```bash
-cp ../adk-provider-sapaicore/.env .env
+mise run check
+mise run integration
+mise run smoke
 ```
 
-### Required for smoke tests
+## Smoke-test credentials
 
-| Variable | Purpose |
-|---|---|
-| `AI_CORE_ENDPOINT` | SAP AI Core API endpoint |
-| `AI_CORE_CLIENT_ID` | OAuth2 client ID |
-| `AI_CORE_CLIENT_SECRET` | OAuth2 client secret |
-| `AI_CORE_AUTH_URL` | OAuth2 token endpoint |
-| `AI_CORE_RESOURCE_GROUP` | Resource group (orchestration mode) |
+Smoke tests use the adapter-specific environment variables listed in `.env.example`. Keep their values in `.env`; never commit them.
 
-### Optional
+The GitHub side of the smoke suite is an `httptest` server. `GITHUB_TOKEN` may be a placeholder because no request reaches GitHub.
 
-| Variable | Purpose |
-|---|---|
-| `AI_CORE_FOUNDATION_DEPLOYMENT_ID` | Direct deployment ID (foundation mode) |
-| `AI_CORE_FOUNDATION_MODEL` | Model name for foundation mode |
-| `GITHUB_TOKEN` | GitHub PAT (smoke tests with real GitHub — optional) |
+## Project structure
 
-## Tasks
+See [ARCHITECTURE.md](ARCHITECTURE.md) for package responsibilities and runtime flow.
 
-```bash
-mise run build          # Build all packages
-mise run test           # Unit tests with race detector
-mise run lint           # golangci-lint
-mise run check          # build + vet + lint + test (CI gate)
-mise run integration    # Integration tests (mock LLM)
-mise run smoke          # Smoke tests (real AI Core + mock GitHub)
-mise run coverage       # Tests with coverage report
-```
+## Pull requests
 
-## Project Structure
-
-See [docs/ARCHITECTURE.md](./ARCHITECTURE.md) for full architecture documentation.
-
-## Credentials Source
-
-Both `duto-ai` and `adk-provider-sapaicore` talk to the same SAP AI Core instance.
-The `.env` file format is identical — credentials are interchangeable between projects.
+- Create a focused branch using the prefixes in `AGENTS.md`.
+- Add behavior tests for code changes.
+- Run `mise run check` and `mise run integration`.
+- Update public documentation when changing CLI flags, workflow fields, Action inputs/outputs, providers, or tools.
+- Keep examples and fixtures free of credentials, private endpoints, customer names, and internal model identifiers.

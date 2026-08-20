@@ -34,7 +34,7 @@ func TestSmoke_FixturesLoad(t *testing.T) {
 }
 
 func TestSmoke_PRReview_FullWorkflow(t *testing.T) {
-	// Required env vars for AI Core
+	// Required credentials for the configured live provider.
 	envOrSkip(t, "AI_CORE_ENDPOINT")
 	envOrSkip(t, "AI_CORE_CLIENT_ID")
 	envOrSkip(t, "AI_CORE_CLIENT_SECRET")
@@ -73,7 +73,7 @@ func TestSmoke_PRReview_FullWorkflow(t *testing.T) {
 		t.Fatalf("workflow not found: %v", err)
 	}
 
-	t.Log("Starting full workflow with real AI Core...")
+	t.Log("Starting full workflow with the configured live provider...")
 
 	runErr := runtime.Run(ctx, configPath, workflowPath,
 		runtime.WithGitHubBaseURL(mock.server.URL),
