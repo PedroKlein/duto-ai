@@ -20,7 +20,7 @@ func TestNewLLM_UnknownType(t *testing.T) {
 	}
 }
 
-func TestNewLLM_AICoreRequiresEndpoint(t *testing.T) {
+func TestNewLLM_BundledProviderRequiresEndpoint(t *testing.T) {
 	// Without proper credentials, this will fail with auth error
 	cfg := config.Provider{
 		Type: "ai-core",
