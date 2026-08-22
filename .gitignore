@@ -34,8 +34,12 @@ Thumbs.db
 # Babysitter
 .a5c/
 
-# Pi
+# Local agent and planning artifacts
 .pi-subagents/
+.gitnexus/
+.wayfinder.json
+/plans/
+/docs/proposals/
 
 # Project-specific
 /CONTEXT.md

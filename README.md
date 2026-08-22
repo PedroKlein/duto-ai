@@ -1,8 +1,10 @@
 # duto-ai
 
-Composable AI workflow steps for CI pipelines.
+A CLI and runtime for bounded AI workflow DAGs.
 
-`duto-ai` compiles a YAML workflow into an [ADK Go v2](https://github.com/google/adk-go) execution graph. The workflow controls step order, model selection, tool access, retries, and timeouts. The model handles the reasoning inside each step.
+`duto-ai` validates and compiles a YAML workflow into an [ADK Go v2](https://github.com/google/adk-go) execution graph. Humans, coding agents, planners, and CI jobs can produce workflows; duto executes the resulting finite, inspectable plan and returns structured results.
+
+Local CLI execution is the primary interface. GitHub Actions is an official first-class host adapter over the same host-neutral runtime, not a separate workflow model.
 
 Current release: **v0.2.2**
 
@@ -20,40 +22,38 @@ Current release: **v0.2.2**
 
 Provider registration, custom tools, typed outputs, and additional provider adapters are not public extension points in v0.2.2.
 
-## Quick start
+## Accepted CLI-first contract
 
-### 1. Add the provider configuration
+The next contract makes local one-shot use primary. Its exact command form is `duto-ai validate|plan|run [--config FILE] [--format text|json] WORKFLOW|-`; `-` reads workflow YAML from stdin.
 
-Copy `.github/ai-workflows/config.yaml` into your repository. Replace the example model names and provide the referenced secrets as environment variables.
+```bash
+duto-ai validate --config duto.yaml workflows/review.yaml
+duto-ai plan --format json --config duto.yaml workflows/review.yaml > plan.json
+duto-ai run --format json --config duto.yaml workflows/review.yaml > result.json
+```
+
+Each command emits one payload on stdout and sends logs or incidental diagnostics to stderr. `run` validates internally and uses fresh in-memory services by default. GitHub Actions will invoke the same JSON contract as the M2 host adapter; workspace/Git mutation and trusted publication belong to M3. Durable pause/resume and recovery are future-host capabilities, not M1 dependencies.
+
+The accepted portable contract uses logical model aliases and provider-neutral workflow YAML. Trusted runtime configuration binds those aliases to a configured adapter; for example:
 
 ```yaml
 provider:
-  type: ai-core
+  type: custom-provider
   config:
     endpoint: ${DUTO_PROVIDER_ENDPOINT}
-    resource_group: ${DUTO_PROVIDER_RESOURCE_GROUP}
-    client_id: ${DUTO_PROVIDER_CLIENT_ID}
-    client_secret: ${DUTO_PROVIDER_CLIENT_SECRET}
-    auth_url: ${DUTO_PROVIDER_AUTH_URL}
-
+    credential: ${DUTO_PROVIDER_CREDENTIAL}
 models:
   light: example-small-model
-  medium: example-medium-model
-
-defaults:
-  model: medium
-  model_config:
-    temperature: 0.2
-    max_tokens: 4096
-  tools:
-    - github.read-pr
-    - github.read-diff
-    - github.list-changed-files
+  capable: example-capable-model
 ```
 
-The environment variable names are user-defined. They are expanded before the configuration is parsed.
+The accepted workflow, tool-profile, prompt/result, and milestone details are recorded in [ADRs 006–008](docs/adr/006-workflow-v1-contract.md).
 
-### 2. Define a workflow
+## Current v0.2.2 quick start
+
+The remainder of this section describes shipped v0.2.2 behavior, not the accepted next contract.
+
+### 1. Define a workflow
 
 Create `.github/ai-workflows/pr-review.yaml`:
 
@@ -89,7 +89,7 @@ steps:
 
 ADK passes predecessor output to successor steps. In v0.2.2, `output` enables step output storage, but its value is not yet a user-addressable output name.
 
-### 3. Run it from GitHub Actions
+### 2. Run it from GitHub Actions
 
 Create `.github/workflows/ai-review.yaml`:
 
@@ -116,30 +116,23 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DUTO_PROVIDER_ENDPOINT: ${{ secrets.DUTO_PROVIDER_ENDPOINT }}
-          DUTO_PROVIDER_RESOURCE_GROUP: ${{ secrets.DUTO_PROVIDER_RESOURCE_GROUP }}
-          DUTO_PROVIDER_CLIENT_ID: ${{ secrets.DUTO_PROVIDER_CLIENT_ID }}
-          DUTO_PROVIDER_CLIENT_SECRET: ${{ secrets.DUTO_PROVIDER_CLIENT_SECRET }}
-          DUTO_PROVIDER_AUTH_URL: ${{ secrets.DUTO_PROVIDER_AUTH_URL }}
+          DUTO_PROVIDER_CREDENTIAL: ${{ secrets.DUTO_PROVIDER_CREDENTIAL }}
 ```
 
 Pin the Action to an exact release. The repository does not currently publish a moving `v0` tag.
 
-## CLI
+## Current v0.2.2 CLI
+
+The shipped release currently exposes:
 
 ```text
 duto-ai run [flags] workflow.yaml
 duto-ai version
 ```
 
-Run a local validation without calling a model:
+Its legacy validation path is the `run` command's dry-run flag. The accepted replacement is the separate `validate`, `plan`, and one-shot `run` surface shown above.
 
-```bash
-duto-ai run --dry-run \
-  --config .github/ai-workflows/config.yaml \
-  .github/ai-workflows/pr-review.yaml
-```
-
-Important `run` flags:
+Important shipped `run` flags:
 
 | Flag | Default | Description |
 |---|---:|---|
@@ -153,7 +146,7 @@ Important `run` flags:
 | `--output-format` | `text` | `text`, `json`, or `markdown` |
 | `--output-file` | empty | Also write formatted output to a file |
 
-## Workflow fields
+## Current v0.2.2 workflow fields
 
 | Field | Required | Description |
 |---|---:|---|
@@ -181,7 +174,7 @@ Known v0.2.2 contract limits:
 
 ## Tool catalog
 
-Tools are available only when defaults or the current step whitelist them.
+This catalog lists shipped compatibility names. In the accepted M1 contract, tools are absent by default and selected by exact name, flat profile, or a terminal-family selector such as `files.*`. Unknown or unmatched selectors and portable global `*` fail admission with status 3 and zero model/tool calls. Trusted ceilings and parent authority can only be narrowed. Step outputs and the terminal workflow result are typed.
 
 ### GitHub
 
@@ -198,17 +191,18 @@ Tools are available only when defaults or the current step whitelist them.
 - `shell.run`
 - `web.fetch`, `web.request`
 
-Glob patterns such as `github.*`, `github.read-*`, `files.*`, and `*` are supported.
+The shipped v0.2.2 resolver supports broad globs. The accepted contract permits exact names and terminal-family selectors such as `files.*`; portable global `*` and non-terminal patterns such as `github.read-*` reject. A future category selector requires normalized hierarchical tool names and a separate contract decision.
 
 ## Security model
 
-Tool whitelisting limits what the model can call. It is not an operating-system sandbox.
+Tool whitelisting limits what the model can call. It is not an operating-system sandbox. The first bullets describe the accepted target contract; shipped v0.2.2 does not yet implement all of these guards.
 
-- `shell.run` executes an arbitrary shell command with a fixed working directory and timeout.
-- `web.fetch` and `web.request` can access network locations reachable from the runner.
-- GitHub write tools use the permissions granted to `GITHUB_TOKEN`.
-- Workflow files and enabled tools must be treated as trusted code.
-- Do not expose write, network, or shell tools to workflows originating from untrusted pull requests.
+- Accepted M1 `shell.run` is opt-in compatibility authority bounded by trusted command, workspace, environment, time, output, and call ceilings; it is not a sandbox.
+- `web.fetch` and `web.request` can access only locations admitted by trusted network policy.
+- Local callers may use GitHub read/review tools through trusted bindings; the invocation host does not own the tool.
+- File/Git/GitHub mutation and trusted publication are M3 capabilities and are not granted merely by a token being present.
+- Workflow files and enabled capabilities must be treated according to their trust context.
+- With shipped v0.2.2, do not expose write, network, or shell tools to workflows originating from untrusted pull requests.
 
 Grant the job only the GitHub permissions required by its selected tools. See [SECURITY.md](SECURITY.md) for reporting and deployment guidance.
 

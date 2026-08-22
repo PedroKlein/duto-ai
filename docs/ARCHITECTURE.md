@@ -2,23 +2,36 @@
 
 This document explains the v0.2.2 implementation. It describes shipped behavior, not the deferred extensibility roadmap.
 
+## Product center
+
+Duto is a host-neutral CLI and runtime for bounded AI workflow DAGs. A human, coding agent, planner, or CI job may produce a workflow; duto validates the finite graph, compiles it to ADK Go, executes it, and returns structured results.
+
+Local CLI execution is the primary path. GitHub Actions is an official host adapter over the same runtime. Host adapters own triggers, checkout, credentials, event mapping, and result publication; portable workflow YAML does not depend on GitHub.
+
+Open-ended planning remains outside the runtime. A planner may emit a complete duto workflow, but duto does not initially maintain a backlog, rewrite its own graph, or create arbitrary runtime agents. See [ADR 008](adr/008-product-center-and-delivery-layers.md).
+
 ## System boundary
 
-duto-ai is a process-level runtime. The surrounding pipeline owns triggers, checkout, secrets, token permissions, and runner isolation.
+duto-ai is a process-level runtime. The surrounding caller owns triggers, checkout, secrets, token permissions, and runner isolation.
 
 ```text
-GitHub Actions or local CLI
-  -> duto-ai run
-     -> load config and workflow YAML
-     -> validate and compile an ADK workflow graph
-     -> execute one ADK runner
-     -> call whitelisted tools
-     -> emit structured results and side effects
+local user, agent, planner, or host adapter
+  -> duto-ai validate / plan / run
+     -> load trusted config and portable workflow YAML
+     -> validate and compile one immutable effective plan
+     -> validate: emit diagnostics only
+     -> plan: emit the complete redacted plan only
+     -> run: execute one ADK runner with fresh in-memory services
+     -> emit one typed result and redacted evidence
 ```
+
+M1 does not publish side effects. The M2 Action adapter maps host inputs and projects the same one-shot result. M3 adds staged safe outputs and trusted publication.
 
 The CLI can run anywhere its binary and provider credentials are available. The packaged composite Action currently supports Linux and macOS runners on AMD64 and ARM64.
 
 ## Modules
+
+The module descriptions below distinguish shipped v0.2.2 behavior from the accepted CLI-first target. Accepted target semantics are canonical in ADRs 001–008 and must not be presented as shipped until implemented.
 
 ### `internal/config`
 
@@ -97,9 +110,11 @@ The runtime uses an in-memory ADK session service. State lasts for one invocatio
 
 ## Results and GitHub integration
 
-`RunWithResult` returns workflow and step statuses, outputs, durations, and failure details. The CLI formats the result as text, JSON, or Markdown.
+In shipped v0.2.2, `RunWithResult` returns workflow and step statuses, outputs, durations, and failure details. The CLI formats the result as text, JSON, or Markdown.
 
-Inside GitHub Actions it also writes:
+In the accepted M1 contract, `validate`, `plan`, and `run` each emit one text or schema-versioned JSON payload; logs stay on stderr. One-shot evidence is not a resumable checkpoint/session store.
+
+Inside the current GitHub Action, v0.2.2 also writes:
 
 - `status`, `workflow`, `duration_ms`, and `failed_step` to `GITHUB_OUTPUT`
 - the Markdown report to `GITHUB_STEP_SUMMARY`
@@ -129,15 +144,15 @@ Pipeline authors must treat workflow files as code, use least-privilege tokens, 
 
 `mise run check` runs build, vet, lint, and race tests. Live acceptance runs after deterministic checks.
 
-## Deferred design work
+## Delivery direction
 
-The `duto-ai-extensibility` plan owns the next architecture decisions:
+Future work is layered so optional host features do not become core prerequisites:
 
-- provider registration and additional adapters
-- custom tool registration and capability metadata
-- strict config and tool validation
-- named and typed outputs
-- repository mutation, search, and dependency-security tools
-- execution-context trust policy
+1. **CLI-first core:** strict YAML, effective-plan inspection, typed static DAG execution, exact model/tool/prompt/result contracts, limits, and local evidence.
+2. **One-shot GitHub adapter:** trusted event mapping, least-privilege permissions, summaries, outputs, and artifact upload over the same core runtime.
+3. **Bounded authoring and safe outputs:** admitted workspace/process/Git mutation and a fixed publisher.
+4. **Future durable hosts:** persistent pause/resume, encrypted GitHub state, cross-runner recovery, lifecycle races, and asynchronous reply correlation.
 
-Those designs are gated by ranked use cases. This document should not describe them as shipped until their acceptance criteria pass.
+Strict validation, typed outputs, trust derivation, finite native subagents, and admitted bounded file/read-only Git/GitHub read-review/web/`shell.run` compatibility are accepted M1 work. One-shot Action mapping is M2. Workspace/Git mutation, staged safe outputs, and trusted publication are M3. Public plugin/custom-provider extensibility and additional speculative adapters remain unscheduled. The durable-session decisions already made are preserved by [ADR 008](adr/008-product-center-and-delivery-layers.md) but are not M1 construction dependencies.
+
+This document should not describe deferred designs as shipped until their acceptance criteria pass.

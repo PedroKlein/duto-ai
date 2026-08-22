@@ -16,8 +16,7 @@ description: >
 
 # ADK Go v2 Reference
 
-Source: ADK Go v2.0.0 (`google.golang.org/adk/v2`)  
-Local ref: `/Users/i572543/Dev/pi-repos/repos/github.com/google/adk-go/v2.0.0/`
+Source: ADK Go v2.2.0 (`google.golang.org/adk/v2`). Consult the pinned upstream module source when implementation details must be verified.
 
 ## Architecture Stack
 
@@ -27,7 +26,7 @@ Runner (drives the loop, manages session persistence)
         ├── Flow (internal: preprocess → callLLM → postprocess → tool exec → loop)
         ├── Tools (functiontool.New — typed Go functions as LLM-callable tools)
         ├── Toolsets (collections, dynamic filtering via Predicate)
-        └── SubAgents (delegation via transfer_to_agent or Mode-based tools)
+        └── SubAgents (ModeChat transfer; ModeTask/ModeSingleTurn native tools)
 ```
 
 Alternatively, `workflow.New` defines a DAG of Nodes (AgentNode, FunctionNode, JoinNode) with
@@ -35,21 +34,21 @@ typed edges, parallel execution, and persistence/resume support.
 
 ## Core Rules
 
-### 1. Root agent MUST be ModeChat
+### 1. A direct Runner root LlmAgent MUST be ModeChat
 
-The runner rejects any root agent that isn't `ModeChat`. This is hardcoded:
+When `runner.Config.Agent` is itself an `llmagent`, `Runner.Run` rejects a non-`ModeChat` root. This restriction does not apply to `ModeSingleTurn`/`ModeTask` agents wrapped as workflow nodes or installed as subagent tools:
 
 ```go
-// BAD — panics at runtime
+// BAD — Runner.Run yields an error
 agent, _ := llmagent.New(llmagent.Config{Mode: llmagent.ModeSingleTurn, ...})
-runner.New(runner.Config{Agent: agent, ...}) // ❌ "root agent must be a chat LlmAgent"
+r, _ := runner.New(runner.Config{Agent: agent, ...})
+_ = r // Run reports "root agent must be a chat LlmAgent"
 
 // GOOD
 agent, _ := llmagent.New(llmagent.Config{Mode: llmagent.ModeChat, ...})
 ```
 
-`ModeSingleTurn` and `ModeTask` are for sub-agents only — they get installed as tools
-automatically when nested under a ModeChat parent.
+`ModeSingleTurn` and `ModeTask` are valid subagents and workflow nodes subject to ADK placement rules. When nested under a `ModeChat` parent, they are installed automatically as tools.
 
 ### 2. The agentic loop is automatic
 
@@ -103,17 +102,41 @@ for event, err := range r.Run(ctx, userID, sessionID, msg, cfg) {
 }
 ```
 
-### 7. Session is required — use InMemoryService for simple cases
+### 7. Session is required — use NewInMemory for simple cases
 
 ```go
-runner.New(runner.Config{
-    Agent:          myAgent,
-    SessionService: session.InMemoryService(),
-})
+r, err := runner.NewInMemory("my-app", myAgent)
 ```
 
-The runner creates/gets a session per `(userID, sessionID)` pair. Set `AutoCreateSession: true`
-to skip explicit creation.
+Use `runner.New` when supplying plugins or custom session/artifact/memory services. The runner creates/gets a session per `(userID, sessionID)` pair; `AutoCreateSession: true` skips explicit creation.
+
+### 8. Native subagent modes own ordinary delegation
+
+`llmagent.Config.SubAgents` automatically installs:
+
+- `ModeSingleTurn` children as ordinary agent tools backed by `workflow.RunNode`;
+- `ModeTask` children as task tools whose structured result is returned through `finish_task`;
+- `ModeChat` children through transfer semantics.
+
+Do not add a custom delegation protocol unless native per-child tools cannot express a tested requirement. `tool/agenttool.New` is different: it starts a separate in-memory runner/session and collapses child events.
+
+`IncludeContents` has only `default` and `none`. `ModeSingleTurn` forces `none`. Branch and isolation scopes filter history; they are not immutable context forks or security sandboxes.
+
+### 9. OutputSchema works with tools in v2.2
+
+`llmagent.Config.OutputSchema` may be used with tools. ADK injects `set_model_response` when a model needs a tool-based structured-output workaround. Task-mode agents use `finish_task` with the declared output schema.
+
+Prefer native `OutputSchema`, workflow node schemas, and `ValidateInput`/`ValidateOutput` over a custom final-text decoder.
+
+### 10. Reuse plugins, TaskRunner, skills, and workflow controls
+
+- `plugin.New` provides run/event/agent/model/tool callbacks; use it for cross-cutting policy/evidence instead of wrappers around every agent.
+- `platform.WithTaskRunner` controls standard function-call fan-out; the default runs calls concurrently.
+- `workflow.NodeConfig` owns retries, timeout, resume behavior, and per-item parallel workers.
+- `workflow.WithMaxConcurrency` bounds statically scheduled graph nodes.
+- `workflow.NewRequestInputEvent`/`Resume` provide native HITL pause/resume.
+- `tool/skilltoolset` provides skill parsing, sources, preload wrappers, and load tools.
+- ADK session, artifact, memory, and telemetry services should be reused rather than mirrored.
 
 ## model.LLM Provider Interface
 
@@ -151,8 +174,7 @@ Before building with ADK, ask:
   directly. Runner adds session persistence, agent transfer, and the tool loop.
 - **Do I need a Workflow or just an Agent?** Single agent with tools handles most cases. Workflow
   graphs are for parallel fan-out, typed data flow between nodes, or HITL pause/resume.
-- **Should this be a Tool or a SubAgent?** If it returns structured data, use `functiontool.New`.
-  If it needs its own tools/instruction/multi-turn reasoning, make it a `ModeSingleTurn` sub-agent.
+- **Should this be a Tool or a SubAgent?** If it is deterministic Go behavior, use `functiontool.New`. If it needs its own model, instruction, tools, or reasoning loop, use a declared `ModeSingleTurn` or `ModeTask` sub-agent.
 
 ## Toolset Interface
 
@@ -209,8 +231,7 @@ llmagent.Config{
 
 ## NEVER
 
-- **NEVER set Mode to anything other than ModeChat on the root agent** — Runner.Run rejects it
-  with a hard error; ModeSingleTurn/ModeTask are for sub-agents that get auto-installed as tools
+- **NEVER use a non-ModeChat `llmagent` directly as `runner.Config.Agent`** — `Runner.Run` yields an error; wrap ModeSingleTurn/ModeTask in a workflow node or install them as subagents
 
 - **NEVER read tool schemas from `req.Tools` map in a provider** — that's the internal dispatch
   map (values are `tool.Tool` interfaces); schemas live in `req.Config.Tools[].FunctionDeclarations`
@@ -224,8 +245,11 @@ llmagent.Config{
 - **NEVER iterate `iter.Seq2` events without checking `event.LLMResponse.Partial`** — partial
   events are streaming chunks; only the final non-partial event is committed to session history
 
-- **NEVER use `OutputSchema` with tools** — when OutputSchema is set, the agent cannot use any
-  tools; it forces structured output mode which is incompatible with function calling
+- **NEVER implement a custom final-text structured-output loop solely because an agent has tools** — v2.2 supports `OutputSchema` with tools and task-mode `finish_task`
+
+- **NEVER call `tool/agenttool.New` when same-runner native SubAgents are required** — agenttool starts a separate in-memory runner/session and collapses lineage
+
+- **NEVER describe `IncludeContentsDefault`, branches, or isolation scopes as a context-window fork or security sandbox** — they filter shared session history and infrastructure
 
 - **NEVER call `runner.Run` without consuming all events from the iterator** — the runner persists
   events as they're yielded; stopping iteration mid-stream leaves session state inconsistent

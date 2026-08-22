@@ -1,6 +1,6 @@
 # ADK Go v2 Internals
 
-Source: `/Users/i572543/Dev/pi-repos/repos/github.com/google/adk-go/v2.0.0/internal/`
+Source: the `internal/` packages in the pinned ADK Go v2.2.0 module.
 
 ## Request Preprocessing Pipeline
 
@@ -54,26 +54,21 @@ func (f *Flow) Run(ctx) iter.Seq2[*Event, error] {
 3. Call `f.callLLM(ctx, req)` → streams `LLMResponse`
 4. Run response postprocessors
 5. If response has function calls → `handleFunctionCalls`:
-   - Looks up tool by name in `req.Tools` map
-   - Runs `BeforeToolCallbacks` (can skip/replace)
-   - Calls `tool.Run(ctx, args)` → gets result map
-   - Runs `AfterToolCallbacks` (can replace result)
-   - Builds `FunctionResponse` content parts
-   - Creates event with all function responses
-6. If agent transfer → delegate to sub-agent's `RunNode`
+   - Looks up each tool by name in `req.Tools`
+   - Runs calls through `platform.RunTasks`; default is concurrent and a host may install `platform.WithTaskRunner`
+   - Runs `BeforeToolCallbacks`, `tool.Run`, and `AfterToolCallbacks`
+   - Reassembles `FunctionResponse` parts in request order
+6. Native task/single-turn subagents dispatch through `RunNode`; chat agents use transfer semantics
 
 ## Tool Dispatch (handleFunctionCalls)
 
 ```go
 func (f *Flow) handleFunctionCalls(ctx, tools map[string]tool.Tool, resp, ...) (*Event, error) {
-    for _, fc := range functionCalls(resp.Content) {
-        tool := tools[fc.Name]  // lookup from req.Tools map
-        // Run before-tool callbacks
-        result, err := tool.Run(ctx, fc.Args)
-        // Run after-tool callbacks
-        // Build FunctionResponse part
-    }
-    // Return event with all FunctionResponse parts
+    calls := functionCalls(resp.Content)
+    tasks := make([]func(context.Context), len(calls))
+    // Each task resolves req.Tools[call.Name], then runs callbacks and tool.Run.
+    platform.RunTasks(ctx, tasks)
+    // Function responses are emitted in original call order.
 }
 ```
 
@@ -108,10 +103,10 @@ From a tool/callback:
 func(ctx agent.Context, args MyArgs) (MyResult, error) {
     // Read state
     val, err := ctx.State().Get("some_key")
-    
+
     // Write state (via event actions — persisted on next event)
     ctx.Actions().StateDelta["my_output"] = "result"
-    
+
     // Read session history
     events := ctx.Session().Events()
     for i := 0; i < events.Len(); i++ {
@@ -225,13 +220,13 @@ Tools can be tested without any ADK machinery:
 ```go
 func TestSearchTool(t *testing.T) {
     tool, _ := functiontool.New[SearchArgs, SearchResult](cfg, handler)
-    
+
     // Cast to runnableTool interface (internal but stable)
     type runner interface {
         Run(agent.Context, any) (map[string]any, error)
     }
     r := tool.(runner)
-    
+
     ctx := &fakeContext{agent.StrictContextMock{Ctx: t.Context()}}
     result, err := r.Run(ctx, map[string]any{"query": "test"})
     // assert on result
