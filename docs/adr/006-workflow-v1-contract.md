@@ -259,7 +259,7 @@ ADR 002 is canonical. Trusted configuration and portable workflows may define un
 The common exact-set form is concise:
 
 ```yaml
-tools: [files.read, git.diff]
+tools: [files.read, git.read.diff]
 ```
 
 Composition uses the closed expanded form:
@@ -268,7 +268,7 @@ Composition uses the closed expanded form:
 tools:
   from: parent
   add_profiles: [source-review]
-  add: [git.log]
+  add: [git.read.log]
   remove_profiles: [history]
   remove: [files.grep]
 ```
@@ -277,7 +277,7 @@ tools:
 - Omitted tools, `tools: []`, and an empty expression mean no direct tools at workflow, named-agent, and step scopes.
 - Inheritance is explicit through `from: parent`; it is invalid at workflow root.
 - Expansion order is base, add profiles, add selectors, remove profiles, remove selectors; overlaps deduplicate by exact name and each removal must match the current set.
-- Exact names and terminal family wildcards must match. Portable global `*` is invalid so catalog growth cannot silently widen authority.
+- Exact names and allowed terminal namespace wildcards must match. M1 allows `files.*`, `git.read.*`, and `github.read.*`; `git.*`, `github.*`, and portable global `*` are invalid.
 - A workflow is bounded by trusted authority. Every top-level agent, delegated agent, and step is a subset of its use-specific parent/orchestrator authority.
 - A child's tools never become directly callable by its parent merely through delegation.
 - Per-tool limits are separate exact-name `tool_limits`; profiles never carry call counts or other limits.
@@ -296,7 +296,7 @@ agents:
     mode: single_turn
     model: capable
     instruction: {text: Return structured findings.}
-    tools: [files.read, git.diff]
+    tools: [files.read, git.read.diff]
     workspaces: [{name: source, access: read}]
     skills: [go-review]
     context: {mode: fresh}
@@ -635,7 +635,7 @@ result: {step: report}
 version: 1
 name: parallel-review
 model: light
-tools: [files.read, git.log]
+tools: [files.read, git.read.log]
 limits: {timeout: 5m, max_iterations: 6, max_model_calls: 6, max_tool_calls: 12, max_concurrency: 2, max_parallel_calls: 2, max_artifact_bytes: 0}
 inputs:
   objective: {schema: {type: string, max_length: 4096}}
@@ -659,7 +659,7 @@ steps:
   - id: scan-history
     needs: []
     instruction: {text: Inspect history concerns.}
-    tools: [git.log]
+    tools: [git.read.log]
     workspaces: [{name: source, access: read}]
     input:
       type: object
@@ -826,7 +826,7 @@ The model sees a native `researcher` tool, not `agent.delegate`. Snapshot conten
 version: 1
 name: diagnosis-only
 model: capable
-tools: [files.read, git.diff]
+tools: [files.read, git.read.diff]
 limits: {timeout: 8m, max_iterations: 8, max_model_calls: 8, max_tool_calls: 20, max_concurrency: 1, max_parallel_calls: 1, max_artifact_bytes: 1048576}
 inputs:
   failure: {schema: {type: string, max_length: 16384}}
@@ -834,7 +834,7 @@ steps:
   - id: diagnose
     needs: []
     instruction: {text: Diagnose without modifying the repository.}
-    tools: [files.read, git.diff]
+    tools: [files.read, git.read.diff]
     workspaces: [{name: source, access: read}]
     input:
       type: object
@@ -861,7 +861,7 @@ result:
 version: 1
 name: handled-partial-data
 model: light
-tools: [files.read, git.log]
+tools: [files.read, git.read.log]
 limits: {timeout: 5m, max_iterations: 6, max_model_calls: 6, max_tool_calls: 12, max_concurrency: 2, max_parallel_calls: 2, max_artifact_bytes: 0}
 inputs:
   objective: {schema: {type: string, max_length: 4096}}
@@ -885,7 +885,7 @@ steps:
   - id: enrichment
     needs: []
     instruction: {text: Add history when available; otherwise return unavailable without failing.}
-    tools: [git.log]
+    tools: [git.read.log]
     workspaces: [{name: source, access: read}]
     input:
       type: object

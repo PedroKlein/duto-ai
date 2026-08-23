@@ -100,7 +100,9 @@ Registered namespaces:
 - `shell.*`: command execution
 - `web.*`: fetch and request
 
-The exact catalog is maintained in `README.md` and the package `RegisterAll` functions.
+The exact shipped catalog is maintained in `README.md` and the package `RegisterAll` functions.
+
+The accepted M1 replacement keeps `files.read`, `files.find`, `files.grep`, `web.fetch`, and `shell.run`; renames Git reads to `git.read.log`, `git.read.blame`, `git.read.show`, and `git.read.diff`; and places every GitHub read/review operation under `github.read.*`. Portable workflows may use exact names or `files.*`, `git.read.*`, and `github.read.*`. The broader `git.*`, `github.*`, and global `*` selectors reject. GitHub mutation and arbitrary-method web requests are not in M1. These names describe the accepted target, not shipped v0.2.2 behavior.
 
 ### `internal/runtime`
 

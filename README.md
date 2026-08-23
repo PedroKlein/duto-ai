@@ -174,7 +174,7 @@ Known v0.2.2 contract limits:
 
 ## Tool catalog
 
-This catalog lists shipped compatibility names. In the accepted M1 contract, tools are absent by default and selected by exact name, flat profile, or a terminal-family selector such as `files.*`. Unknown or unmatched selectors and portable global `*` fail admission with status 3 and zero model/tool calls. Trusted ceilings and parent authority can only be narrowed. Step outputs and the terminal workflow result are typed.
+The lists below are the shipped v0.2.2 compatibility names. They are not aliases for the accepted M1 catalog.
 
 ### GitHub
 
@@ -191,14 +191,21 @@ This catalog lists shipped compatibility names. In the accepted M1 contract, too
 - `shell.run`
 - `web.fetch`, `web.request`
 
-The shipped v0.2.2 resolver supports broad globs. The accepted contract permits exact names and terminal-family selectors such as `files.*`; portable global `*` and non-terminal patterns such as `github.read-*` reject. A future category selector requires normalized hierarchical tool names and a separate contract decision.
+The accepted M1 replacement uses these exact names:
+
+- Files: `files.read`, `files.find`, `files.grep`
+- Git: `git.read.log`, `git.read.blame`, `git.read.show`, `git.read.diff`
+- GitHub: `github.read.issue`, `github.read.pr`, `github.read.diff`, `github.read.changed-files`, `github.read.comments`, `github.read.reviews`, `github.read.checks`, `github.read.search-issues`
+- Process and network: `shell.run`, `web.fetch`
+
+M1 includes no GitHub write tool or arbitrary-method web request. Portable selectors may be exact names or the allowed terminal namespace wildcards `files.*`, `git.read.*`, and `github.read.*`. The broader `git.*`, `github.*`, and global `*` selectors reject with status 3 and zero model/tool calls. Trusted ceilings and parent authority can only narrow the resulting set. Step outputs and the terminal workflow result are typed.
 
 ## Security model
 
 Tool whitelisting limits what the model can call. It is not an operating-system sandbox. The first bullets describe the accepted target contract; shipped v0.2.2 does not yet implement all of these guards.
 
 - Accepted M1 `shell.run` is opt-in compatibility authority bounded by trusted command, workspace, environment, time, output, and call ceilings; it is not a sandbox.
-- `web.fetch` and `web.request` can access only locations admitted by trusted network policy.
+- Accepted M1 `web.fetch` can access only locations admitted by trusted network policy; the shipped v0.2.2 `web.request` surface is not part of M1.
 - Local callers may use GitHub read/review tools through trusted bindings; the invocation host does not own the tool.
 - File/Git/GitHub mutation and trusted publication are M3 capabilities and are not granted merely by a token being present.
 - Workflow files and enabled capabilities must be treated according to their trust context.

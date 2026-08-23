@@ -52,11 +52,11 @@ Trusted configuration may define centrally reusable profiles; a portable workflo
 ```yaml
 # trusted duto.yaml
 tool_profiles:
-  source-review: [files.read, files.grep, git.diff]
+  source-review: [files.read, files.grep, git.read.diff]
 
 # portable workflow
 tool_profiles:
-  history: [git.log, git.show]
+  history: [git.read.log, git.read.show]
 ```
 
 Profile names must be unique across both documents. Profiles cannot reference profiles, own limits, contain host bindings, or discover plugins. Trusted profiles are reusable spelling, not grants: a portable scope must explicitly add one, and the trusted catalog ceiling still bounds every expansion.
@@ -64,14 +64,14 @@ Profile names must be unique across both documents. Profiles cannot reference pr
 Every workflow, named-agent, and step scope accepts either an exact selector array or a composable expression:
 
 ```yaml
-tools: [files.read, git.diff]
+tools: [files.read, git.read.diff]
 ```
 
 ```yaml
 tools:
   from: empty
   add_profiles: [source-review]
-  add: [git.log]
+  add: [git.read.log]
   remove_profiles: [history]
   remove: [files.grep]
 ```
@@ -124,22 +124,24 @@ Current capability classes are:
 
 The classes are policy facts, not workflow selectors.
 
-M1 registers only currently shipped families and their compatibility names. New configuration records are added alongside new implementations:
+M1 registers only the accepted names for currently shipped families. It does not retain aliases for the v0.2 names.
 
-| Family | M1 | Later |
+| Family | M1 names | Later |
 |---|---|---|
-| Files | Bounded read/find/grep compatibility | Mutation in M3 |
-| Git | Bounded history/diff inspection | Local authoring and publication in M3 |
-| GitHub | Bounded read/review with trusted bindings, including from the local CLI | Action mapping in M2; mutation/publication in M3 |
-| Web | Bounded fetch compatibility | Additional search capabilities remain unscheduled |
-| Shell/process | Opt-in `shell.run` compatibility under trusted command, workspace, environment, time, output, and call ceilings | M3 may add fixed aliases that narrow or replace compatibility |
-| Agent | Finite native ADK subagent tools with parent-bounded authority | Persistent delegated conversations remain future-host work |
+| Files | `files.read`, `files.find`, `files.grep` | Mutation in M3 |
+| Git | `git.read.log`, `git.read.blame`, `git.read.show`, `git.read.diff` | Local authoring and publication in M3 |
+| GitHub | `github.read.issue`, `github.read.pr`, `github.read.diff`, `github.read.changed-files`, `github.read.comments`, `github.read.reviews`, `github.read.checks`, `github.read.search-issues` | Action mapping in M2; mutation/publication in M3 |
+| Web | Bounded `web.fetch` | Additional search capabilities remain unscheduled |
+| Shell/process | Opt-in `shell.run` under trusted command, workspace, environment, time, output, and call ceilings | M3 may add fixed aliases that narrow or replace compatibility |
+| Agent | One native tool per admitted declared child | Persistent delegated conversations remain future-host work |
+
+M1 GitHub tools only read runtime-bound repository and review data. Posting reviews or comments, changing labels, and other mutation or publication are absent. A later write taxonomy may use names such as `github.write.comment`, but that example does not admit or finalize an M3 tool.
 
 A catalog version changes only when model-visible names or policy semantics change. A digest is useful in the effective plan, but a public per-layer decision-trace type is not required in M1.
 
 ## Selectors and deterministic expansion
 
-Portable lists accept exact names such as `files.read` and one terminal family wildcard such as `files.*`. Names are case-sensitive ASCII; wildcards appear only as the final complete segment. The global `*` selector is trusted-ceiling syntax only: permitting a portable “all tools” grant would silently widen authority when the catalog grows. A centrally maintained explicit profile is the reviewable alternative.
+Portable lists accept exact names such as `files.read`, `git.read.diff`, and `github.read.pr`. A wildcard may appear only as the final complete segment of an allowed leaf namespace. M1 allows `files.*`, `git.read.*`, and `github.read.*`; `web.fetch` and `shell.run` are selected exactly. The broader `git.*` and `github.*` selectors are invalid, as is portable global `*`. Names are case-sensitive ASCII. A centrally maintained explicit profile is the reviewable alternative.
 
 The compiler evaluates a tool expression in this fixed order:
 
