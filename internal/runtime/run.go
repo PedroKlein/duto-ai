@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/artifact"
 	"google.golang.org/adk/v2/platform"
 	"google.golang.org/adk/v2/plugin"
@@ -22,6 +23,8 @@ import (
 	"github.com/PedroKlein/duto-ai/internal/compiler"
 	"github.com/PedroKlein/duto-ai/internal/plan"
 )
+
+const resultErrorInput = "input"
 
 var (
 	ErrExecution         = errors.New("workflow execution error")
@@ -50,7 +53,7 @@ func RunWithInputsAndToolsets(ctx context.Context, compiled *plan.Plan, resolve 
 	if validationErr := compiler.ValidateInputs(compiled, inputs); validationErr != nil {
 		result.Status = StatusFailed
 		result.FinishedAt = time.Now().UTC()
-		result.Errors = append(result.Errors, ResultError{Kind: "input"})
+		result.Errors = append(result.Errors, ResultError{Kind: resultErrorInput})
 
 		return result, ErrExecution
 	}
@@ -85,20 +88,30 @@ func RunWithInputsAndToolsets(ctx context.Context, compiled *plan.Plan, resolve 
 		return nil, fmt.Errorf("creating runner: %w", err)
 	}
 
-	encodedInputs, err := json.Marshal(inputs)
+	runInputs, terminalStepID, terminalAgentName, err := executionInputs(compiled.Snapshot().Workflow, inputs)
 	if err != nil {
 		result.Status = StatusFailed
 		result.FinishedAt = time.Now().UTC()
-		result.Errors = append(result.Errors, ResultError{Kind: "input"})
+		result.Errors = append(result.Errors, ResultError{Kind: resultErrorInput})
 
 		return result, ErrExecution
 	}
 
+	encodedInputs, err := json.Marshal(runInputs)
+	if err != nil {
+		result.Status = StatusFailed
+		result.FinishedAt = time.Now().UTC()
+		result.Errors = append(result.Errors, ResultError{Kind: resultErrorInput})
+
+		return result, ErrExecution
+	}
+
+	ctx = compiler.WithWorkflowInputs(ctx, inputs)
 	ctx = platform.WithTaskRunner(ctx, boundedTaskRunner(compiled.Snapshot().Workflow.Limits.MaxParallelCalls))
-	runErr := consumeEvents(ctx, r, runID, string(encodedInputs), result)
+	runErr := consumeEvents(ctx, r, root, runID, string(encodedInputs), terminalStepID, terminalAgentName, result)
 	finishResult(result, ctx.Err(), runErr)
 
-	if err := writer.finish(result.Status); err != nil {
+	if err := writer.finish(result.Status, result.Output); err != nil {
 		result.Status = StatusIncomplete
 		result.Errors = append(result.Errors, ResultError{Kind: "evidence"})
 
@@ -124,7 +137,7 @@ func RunWithInputsAndToolsets(ctx context.Context, compiled *plan.Plan, resolve 
 	}
 }
 
-func consumeEvents(ctx context.Context, r *runner.Runner, runID, inputs string, result *Result) error { //nolint:gocyclo // One fold keeps event and terminal status semantics consistent.
+func consumeEvents(ctx context.Context, r *runner.Runner, root agent.Agent, runID, inputs, terminalStepID, terminalAgentName string, result *Result) error { //nolint:gocyclo,gocognit // One fold keeps event and terminal status semantics consistent.
 	var runErr error
 
 	terminalOutputs := make([]map[string]any, 0, 1)
@@ -147,7 +160,21 @@ func consumeEvents(ctx context.Context, r *runner.Runner, runID, inputs string, 
 			continue
 		}
 
+		if terminalAgentName != "" && event.Author == terminalAgentName {
+			if outputErr := llmagent.ProcessLLMAgentOutput(root, event); outputErr != nil {
+				if runErr == nil {
+					runErr = outputErr
+				}
+
+				continue
+			}
+		}
+
 		stepID := eventNodeName(event)
+		if terminalAgentName != "" && event.Author == terminalAgentName {
+			stepID = terminalStepID
+		}
+
 		if usage := usageFromEvent(event); usage != nil {
 			result.Usage = usage
 			if index, ok := stepIndices[stepID]; ok {
@@ -169,7 +196,7 @@ func consumeEvents(ctx context.Context, r *runner.Runner, runID, inputs string, 
 			result.Steps[index].Status = StatusSucceeded
 		}
 
-		if isTerminalEvent(event) {
+		if isTerminalEvent(event) || (terminalAgentName != "" && event.Author == terminalAgentName) {
 			terminalOutputs = append(terminalOutputs, output)
 		}
 	}
@@ -185,6 +212,40 @@ func consumeEvents(ctx context.Context, r *runner.Runner, runID, inputs string, 
 	}
 
 	return runErr
+}
+
+func executionInputs(workflow plan.Workflow, inputs map[string]any) (runInputs map[string]any, terminalStepID, terminalAgentName string, err error) {
+	if len(workflow.Steps) != 1 || workflow.Steps[0].Agent == "" {
+		return inputs, "", "", nil
+	}
+
+	step := workflow.Steps[0]
+	for _, definition := range workflow.Agents {
+		if definition.Name != step.Agent || definition.Mode != "chat" {
+			continue
+		}
+
+		bound := make(map[string]any, len(step.Bindings))
+		for _, binding := range step.Bindings {
+			switch binding.Kind {
+			case "input":
+				value, exists := inputs[binding.Input]
+				if !exists {
+					return nil, "", "", errTerminalOutput
+				}
+
+				bound[binding.Name] = value
+			case "literal":
+				bound[binding.Name] = binding.Literal
+			default:
+				return nil, "", "", errTerminalOutput
+			}
+		}
+
+		return bound, step.ID, definition.Name, nil
+	}
+
+	return inputs, "", "", nil
 }
 
 func newResult(compiled *plan.Plan, runID string, started time.Time) *Result {

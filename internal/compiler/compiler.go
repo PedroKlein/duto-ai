@@ -84,6 +84,15 @@ func CompileWithToolsets(ctx context.Context, compiled *plan.Plan, resolve Model
 		return nil, fmt.Errorf("creating tool guards: %w", err)
 	}
 
+	if step, definition, ok := rootChatAgent(snapshot.Workflow); ok {
+		definitions := make(map[string]plan.Agent, len(snapshot.Workflow.Agents))
+		for _, namedAgent := range snapshot.Workflow.Agents {
+			definitions[namedAgent.Name] = namedAgent
+		}
+
+		return newNamedAgentTree(ctx, snapshot.Workflow.Name, step.ID, definition.Name, definitions, snapshot.Workflow.Skills, resolve, resolveToolset, guards)
+	}
+
 	stepNodes, stepAgents, err := buildStepNodes(ctx, snapshot.Workflow, resolve, resolveToolset, guards)
 	if err != nil {
 		return nil, err
@@ -114,23 +123,51 @@ func CompileWithToolsets(ctx context.Context, compiled *plan.Plan, resolve Model
 	return root, nil
 }
 
+func rootChatAgent(source plan.Workflow) (plan.Step, plan.Agent, bool) {
+	if len(source.Steps) != 1 || source.Steps[0].Agent == "" {
+		return plan.Step{}, plan.Agent{}, false
+	}
+
+	for _, definition := range source.Agents {
+		if definition.Name == source.Steps[0].Agent && definition.Mode == namedAgentModeChat {
+			return source.Steps[0], definition, true
+		}
+	}
+
+	return plan.Step{}, plan.Agent{}, false
+}
+
 func buildStepNodes(ctx context.Context, source plan.Workflow, resolve ModelResolver, resolveToolset ToolsetResolver, guards map[string]*dtool.Guard) (map[string]workflow.Node, []agent.Agent, error) {
 	nodes := make(map[string]workflow.Node, len(source.Steps))
 
+	namedAgents := make(map[string]plan.Agent, len(source.Agents))
+	for _, namedAgent := range source.Agents {
+		namedAgents[namedAgent.Name] = namedAgent
+	}
+
 	agents := make([]agent.Agent, 0, len(source.Steps))
 	for _, step := range source.Steps {
-		llm, err := resolve(ctx, step.Model)
-		if err != nil {
-			return nil, nil, fmt.Errorf("resolving model alias: %w", err)
+		var (
+			stepAgent agent.Agent
+			err       error
+		)
+		if step.Agent != "" {
+			stepAgent, err = newNamedAgentTree(ctx, source.Name, step.ID, step.Agent, namedAgents, source.Skills, resolve, resolveToolset, guards)
+		} else {
+			var llm model.LLM
+
+			llm, err = resolve(ctx, step.Model)
+			if err == nil && llm == nil {
+				err = ErrNilResolvedModel
+			}
+
+			if err == nil {
+				stepAgent, err = newStepAgent(ctx, source.Name, step, source.Skills, llm, resolveToolset, guards[step.ID])
+			}
 		}
 
-		if llm == nil {
-			return nil, nil, ErrNilResolvedModel
-		}
-
-		stepAgent, err := newStepAgent(ctx, source.Name, step, source.Skills, llm, resolveToolset, guards[step.ID])
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("building step %q agent: %w", step.ID, err)
 		}
 
 		timeout, err := time.ParseDuration(step.Limits.Timeout)

@@ -26,6 +26,7 @@ var (
 	ErrUnsupportedCapability = errors.New("capability is not supported by the no-tools plan")
 	ErrInvalidBinding        = errors.New("invalid binding")
 	ErrInvalidResult         = errors.New("invalid terminal result")
+	ErrInvalidAgent          = errors.New("invalid named agent")
 )
 
 type Projection struct {
@@ -45,6 +46,7 @@ type Workflow struct {
 	CatalogDigest string               `json:"catalog_digest"`
 	Limits        Limits               `json:"limits"`
 	Skills        []prompt.FrozenSkill `json:"skills"`
+	Agents        []Agent              `json:"agents"`
 	Steps         []Step               `json:"steps"`
 	Result        Result               `json:"result"`
 }
@@ -64,8 +66,42 @@ type Limits struct {
 	MaxArtifactBytes int    `json:"max_artifact_bytes"`
 }
 
+type Agent struct {
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Mode        string        `json:"mode"`
+	Model       string        `json:"model"`
+	ModelConfig ModelConfig   `json:"model_config"`
+	Instruction prompt.Frozen `json:"instruction"`
+	Tools       ToolScope     `json:"tools"`
+	Skills      []string      `json:"skills"`
+	Workspaces  []Workspace   `json:"workspaces"`
+	Context     AgentContext  `json:"context"`
+	Input       Schema        `json:"input"`
+	Output      Schema        `json:"output"`
+	Limits      Limits        `json:"limits"`
+	Subagents   []string      `json:"subagents"`
+}
+
+type AgentContext struct {
+	Mode     string          `json:"mode"`
+	MaxBytes int             `json:"max_bytes,omitempty"`
+	Include  []ContextSource `json:"include,omitempty"`
+}
+
+type ContextSource struct {
+	Kind      string `json:"kind"`
+	Input     string `json:"input,omitempty"`
+	Workspace string `json:"workspace,omitempty"`
+	File      string `json:"file,omitempty"`
+	Content   string `json:"content,omitempty"`
+	Digest    string `json:"digest"`
+	MaxBytes  int    `json:"max_bytes"`
+}
+
 type Step struct {
 	ID          string        `json:"id"`
+	Agent       string        `json:"agent,omitempty"`
 	Needs       []string      `json:"needs"`
 	When        []Condition   `json:"when,omitempty"`
 	Instruction prompt.Frozen `json:"instruction"`
@@ -162,7 +198,7 @@ type Plan struct {
 	evidenceDirectory string
 }
 
-func Compile(cfg *config.Config, workflow *config.Workflow) (*Plan, error) {
+func Compile(cfg *config.Config, workflow *config.Workflow) (*Plan, error) { //nolint:gocyclo // Admission follows the fixed contract order before construction.
 	if cfg == nil {
 		return nil, ErrNilConfig
 	}
@@ -204,9 +240,18 @@ func Compile(cfg *config.Config, workflow *config.Workflow) (*Plan, error) {
 		return nil, err
 	}
 
-	steps, err := compileSteps(workflow, inputs, limits, workspaceRoots, frozenSkills, toolPolicy.catalog, toolPolicy.profiles, toolPolicy.ceiling, toolPolicy.scope)
+	agents, err := compileAgents(workflow, inputs, limits, workspaceRoots, frozenSkills, toolPolicy)
 	if err != nil {
 		return nil, err
+	}
+
+	steps, err := compileSteps(workflow, inputs, limits, workspaceRoots, frozenSkills, toolPolicy.catalog, toolPolicy.profiles, toolPolicy.ceiling, toolPolicy.scope, agents)
+	if err != nil {
+		return nil, err
+	}
+
+	if agentUseErr := validateAgentUses(agents, steps); agentUseErr != nil {
+		return nil, agentUseErr
 	}
 
 	if concurrencyErr := validateToolConcurrency(steps); concurrencyErr != nil {
@@ -231,6 +276,7 @@ func Compile(cfg *config.Config, workflow *config.Workflow) (*Plan, error) {
 			CatalogDigest: catalogDigest(toolPolicy.catalog),
 			Limits:        limits,
 			Skills:        frozenSkills,
+			Agents:        agents,
 			Steps:         steps,
 			Result:        result,
 		},
@@ -304,12 +350,16 @@ func (p *Plan) Snapshot() Projection {
 }
 
 func resolveModels(cfg *config.Config, workflow *config.Workflow) ([]string, error) {
-	models := make([]string, 0, len(workflow.Steps)+1)
-	seen := make(map[string]struct{}, len(workflow.Steps)+1)
+	models := make([]string, 0, len(workflow.Steps)+len(workflow.Agents)+1)
+	seen := make(map[string]struct{}, len(workflow.Steps)+len(workflow.Agents)+1)
 
-	aliases := make([]string, 0, len(workflow.Steps)+1)
+	aliases := make([]string, 0, len(workflow.Steps)+len(workflow.Agents)+1)
 
 	aliases = append(aliases, workflow.Model)
+	for _, name := range workflow.AgentOrder {
+		aliases = append(aliases, workflow.Agents[name].Model)
+	}
+
 	for _, step := range workflow.Steps {
 		if step.Model != "" {
 			aliases = append(aliases, step.Model)
@@ -332,9 +382,22 @@ func resolveModels(cfg *config.Config, workflow *config.Workflow) ([]string, err
 	return models, nil
 }
 
-func compileSteps(workflow *config.Workflow, workflowInputs []Property, workflowLimits Limits, workspaceRoots map[string]string, skills []prompt.FrozenSkill, catalog dtool.Catalog, profiles map[string][]string, ceiling []string, workflowTools ToolScope) ([]Step, error) { //nolint:gocyclo // Compilation follows the fixed admission sequence.
+func compileSteps(workflow *config.Workflow, workflowInputs []Property, workflowLimits Limits, workspaceRoots map[string]string, skills []prompt.FrozenSkill, catalog dtool.Catalog, profiles map[string][]string, ceiling []string, workflowTools ToolScope, agents []Agent) ([]Step, error) { //nolint:gocyclo,gocognit // Compilation follows the fixed admission sequence.
 	steps := make([]Step, 0, len(workflow.Steps))
+	agentByName := agentsByName(agents)
+
 	for _, source := range workflow.Steps {
+		if source.Agent != "" {
+			step, err := compileNamedAgentStep(source, workflow.Steps, workflowInputs, agentByName)
+			if err != nil {
+				return nil, fmt.Errorf("step %q: %w", source.ID, err)
+			}
+
+			steps = append(steps, step)
+
+			continue
+		}
+
 		if len(source.Needs) > 1 && source.Wait != "all_succeeded" {
 			return nil, fmt.Errorf("step %q fan-in: %w", source.ID, ErrInvalidBinding)
 		}

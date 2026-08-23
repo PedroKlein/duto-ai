@@ -37,6 +37,10 @@ func ValidateWorkflow(workflow *Workflow) error { //nolint:gocyclo // The closed
 		return ErrNoSteps
 	}
 
+	if err := validateAgentGraph(workflow); err != nil {
+		return err
+	}
+
 	ids := make(map[string]struct{}, len(workflow.Steps))
 	for _, step := range workflow.Steps {
 		if !namePattern.MatchString(step.ID) {
@@ -144,7 +148,7 @@ func validateDecodedWorkflow(name string, workflow *Workflow, rootFields map[str
 
 	ids := make(map[string]int, len(workflow.Steps))
 	for i, step := range workflow.Steps {
-		stepFields, err := mappingFields(name, stepsNode.Content[i], fmt.Sprintf("$.steps[%d]", i), "id", "needs", "wait", "when", "instruction", "model", "model_config", "tools", "tool_limits", "skills", "workspaces", "input", "with", "output", "limits")
+		stepFields, err := mappingFields(name, stepsNode.Content[i], fmt.Sprintf("$.steps[%d]", i), "id", "needs", "wait", "when", "agent", "instruction", "model", "model_config", "tools", "tool_limits", "skills", "workspaces", "input", "with", "output", "limits")
 		if err != nil {
 			return err
 		}
@@ -158,6 +162,10 @@ func validateDecodedWorkflow(name string, workflow *Workflow, rootFields map[str
 		}
 
 		ids[step.ID] = i
+	}
+
+	if err := validateDecodedAgents(name, workflow, rootFields["agents"], stepsNode); err != nil {
+		return err
 	}
 
 	for i, step := range workflow.Steps {

@@ -110,8 +110,54 @@ type Condition struct {
 	Outcomes []string
 }
 
+type ContextSourceKind uint8
+
+const (
+	ContextSourceUnknown ContextSourceKind = iota
+	ContextSourceInput
+	ContextSourceOutput
+	ContextSourceFile
+)
+
+type ContextSource struct {
+	Kind   ContextSourceKind
+	Input  string
+	Output OutputRef
+	File   FileSource
+}
+
+const (
+	AgentModeSingleTurn = "single_turn"
+	AgentModeTask       = "task"
+	AgentModeChat       = "chat"
+	ContextModeFresh    = "fresh"
+	ContextModeSnapshot = "snapshot"
+)
+
+type AgentContext struct {
+	Mode    string
+	Include []ContextSource
+}
+
+type AgentSpec struct {
+	Description string
+	Mode        string
+	Model       string
+	Instruction Instruction
+	Tools       ToolExpression
+	ToolLimits  map[string]ToolLimit
+	Skills      []string
+	Workspaces  []WorkspaceRef
+	Context     AgentContext
+	Input       Schema
+	Output      Schema
+	Limits      Limits
+	Subagents   []string
+}
+
 type Step struct {
 	ID          string
+	Agent       string
 	Needs       []string
 	Wait        string
 	When        []Condition

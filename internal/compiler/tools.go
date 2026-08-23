@@ -14,7 +14,7 @@ func newToolGuards(workflow plan.Workflow) (map[string]*dtool.Guard, error) {
 		return nil, fmt.Errorf("parsing workflow tool timeout: %w", err)
 	}
 
-	scopes := make(map[string]dtool.ScopeLimit, len(workflow.Steps))
+	scopes := make(map[string]dtool.ScopeLimit, len(workflow.Steps)+len(workflow.Agents))
 	for _, step := range workflow.Steps {
 		timeout, parseErr := time.ParseDuration(step.Limits.Timeout)
 		if parseErr != nil {
@@ -42,6 +42,25 @@ func newToolGuards(workflow plan.Workflow) (map[string]*dtool.Guard, error) {
 			Timeout:  timeout,
 			Tools:    limits,
 		}
+	}
+
+	for _, namedAgent := range workflow.Agents {
+		timeout, parseErr := time.ParseDuration(namedAgent.Limits.Timeout)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parsing agent tool timeout: %w", parseErr)
+		}
+
+		limits := make(map[string]dtool.ToolLimit, len(namedAgent.Tools.Limits))
+		for _, source := range namedAgent.Tools.Limits {
+			toolTimeout, parseErr := time.ParseDuration(source.Timeout)
+			if parseErr != nil {
+				return nil, fmt.Errorf("parsing agent exact tool timeout: %w", parseErr)
+			}
+
+			limits[source.Name] = dtool.ToolLimit{MaxCalls: source.MaxCalls, Timeout: toolTimeout, MaxRequestBytes: source.MaxRequestBytes, MaxResultBytes: source.MaxResultBytes}
+		}
+
+		scopes[agentGuardKey(namedAgent.Name)] = dtool.ScopeLimit{Names: namedAgent.Tools.Names, MaxCalls: namedAgent.Limits.MaxToolCalls, Timeout: timeout, Tools: limits}
 	}
 
 	guards, err := dtool.NewGuards(dtool.RuntimeLimit{MaxCalls: workflow.Limits.MaxToolCalls, Timeout: runTimeout}, scopes)

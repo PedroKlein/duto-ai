@@ -33,6 +33,8 @@ type Workflow struct {
 	Tools        ToolExpression
 	ToolLimits   map[string]ToolLimit
 	Skills       map[string]SkillSource
+	Agents       map[string]AgentSpec
+	AgentOrder   []string
 	Limits       Limits
 	Steps        []Step
 	Result       Result
@@ -47,13 +49,13 @@ func LoadWorkflow(path string) (*Workflow, error) {
 	return DecodeWorkflow(path, data)
 }
 
-func DecodeWorkflow(name string, data []byte) (*Workflow, error) {
+func DecodeWorkflow(name string, data []byte) (*Workflow, error) { //nolint:gocyclo // Strict document fields are decoded in contract order.
 	root, err := decodeDocument(name, data)
 	if err != nil {
 		return nil, err
 	}
 
-	fields, err := mappingFields(name, root, "$", "version", "name", "description", "inputs", "model", "model_config", "tool_profiles", "tools", "tool_limits", "skills", "limits", "steps", "result")
+	fields, err := mappingFields(name, root, "$", "version", "name", "description", "inputs", "model", "model_config", "tool_profiles", "tools", "tool_limits", "skills", "agents", "limits", "steps", "result")
 	if err != nil {
 		return nil, err
 	}
@@ -97,6 +99,11 @@ func DecodeWorkflow(name string, data []byte) (*Workflow, error) {
 		return nil, err
 	}
 
+	agents, agentOrder, err := decodeAgents(name, fields["agents"])
+	if err != nil {
+		return nil, err
+	}
+
 	limits, err := decodeLimits(name, fields["limits"], "$.limits")
 	if err != nil {
 		return nil, err
@@ -123,6 +130,8 @@ func DecodeWorkflow(name string, data []byte) (*Workflow, error) {
 		Tools:        tools,
 		ToolLimits:   toolLimits,
 		Skills:       skills,
+		Agents:       agents,
+		AgentOrder:   agentOrder,
 		Limits:       limits,
 		Steps:        steps,
 		Result:       result,
@@ -303,7 +312,7 @@ func decodeSteps(name string, node *yaml.Node) ([]Step, error) {
 }
 
 func decodeStep(name string, node *yaml.Node, path string) (Step, error) { //nolint:gocyclo // A step is one closed source record decoded in contract order.
-	fields, err := mappingFields(name, node, path, "id", "needs", "wait", "when", "instruction", "model", "model_config", "tools", "tool_limits", "skills", "workspaces", "input", "with", "output", "limits")
+	fields, err := mappingFields(name, node, path, "id", "needs", "wait", "when", "agent", "instruction", "model", "model_config", "tools", "tool_limits", "skills", "workspaces", "input", "with", "output", "limits")
 	if err != nil {
 		return Step{}, err
 	}
@@ -330,6 +339,26 @@ func decodeStep(name string, node *yaml.Node, path string) (Step, error) { //nol
 	when, err := decodeConditions(name, fields["when"], path+".when")
 	if err != nil {
 		return Step{}, err
+	}
+
+	agentName, err := optionalString(name, fields["agent"], path+".agent")
+	if err != nil {
+		return Step{}, err
+	}
+
+	if agentName != "" {
+		for _, field := range []string{"instruction", "model", "model_config", "tools", "tool_limits", "skills", "workspaces", "input", "output", "limits"} {
+			if fields[field] != nil {
+				return Step{}, diagnostic(name, path+"."+field, fields[field], CodeInvalidValue)
+			}
+		}
+
+		bindings, bindingErr := decodeBindings(name, fields["with"], path+".with")
+		if bindingErr != nil {
+			return Step{}, bindingErr
+		}
+
+		return Step{ID: id, Agent: agentName, Needs: needs, Wait: wait, When: when, With: bindings, WithOrder: mappingKeyOrder(fields["with"])}, nil
 	}
 
 	instruction, err := decodeInstruction(name, fields["instruction"], path+".instruction")

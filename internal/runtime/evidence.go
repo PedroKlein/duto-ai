@@ -32,10 +32,17 @@ type evidenceSource struct {
 	Author       string `json:"author,omitempty"`
 }
 
+type evidenceCorrelation struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+	Tool string `json:"tool"`
+}
+
 type evidencePayload struct {
-	Class        string `json:"class,omitempty"`
-	OutputDigest string `json:"output_digest,omitempty"`
-	Usage        *Usage `json:"usage,omitempty"`
+	Class        string                `json:"class,omitempty"`
+	Correlations []evidenceCorrelation `json:"correlations,omitempty"`
+	OutputDigest string                `json:"output_digest,omitempty"`
+	Usage        *Usage                `json:"usage,omitempty"`
 }
 
 type evidenceRecord struct {
@@ -102,6 +109,22 @@ func (w *evidenceWriter) observe(event *session.Event) {
 	}
 
 	payload := evidencePayload{Class: eventClass(event), Usage: usageFromEvent(event)}
+	if event.Content != nil {
+		for _, part := range event.Content.Parts {
+			if part == nil {
+				continue
+			}
+
+			if part.FunctionCall != nil {
+				payload.Correlations = append(payload.Correlations, evidenceCorrelation{Kind: "call", ID: part.FunctionCall.ID, Tool: part.FunctionCall.Name})
+			}
+
+			if part.FunctionResponse != nil {
+				payload.Correlations = append(payload.Correlations, evidenceCorrelation{Kind: "result", ID: part.FunctionResponse.ID, Tool: part.FunctionResponse.Name})
+			}
+		}
+	}
+
 	if event.Output != nil {
 		payload.OutputDigest = digestValue(event.Output)
 	}
@@ -118,7 +141,7 @@ func (w *evidenceWriter) observe(event *session.Event) {
 	w.append("adk.event", status, source, payload)
 }
 
-func (w *evidenceWriter) finish(status Status) error {
+func (w *evidenceWriter) finish(status Status, output map[string]any) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -126,7 +149,12 @@ func (w *evidenceWriter) finish(status Status) error {
 		return ErrEvidence
 	}
 
-	w.appendLocked("run.finish", string(status), nil, evidencePayload{})
+	payload := evidencePayload{}
+	if output != nil {
+		payload.OutputDigest = digestValue(output)
+	}
+
+	w.appendLocked("run.finish", string(status), nil, payload)
 
 	return nil
 }
