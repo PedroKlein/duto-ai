@@ -55,6 +55,7 @@ var (
 	errUnknownProvider   = errors.New("unknown admitted provider binding")
 	errBundledProvider   = errors.New("creating bundled provider")
 	errBundledModel      = errors.New("creating bundled model")
+	errWorkflowInputs    = errors.New("workflow requires host-supplied inputs unavailable in the CLI")
 )
 
 type outputFormat string
@@ -308,6 +309,10 @@ func loadWorkflow(path string, stdin io.Reader) (*config.Workflow, error) {
 }
 
 func runAdmittedWorkflow(ctx context.Context, cfg *config.Config, compiled *plan.Plan, format outputFormat) ([]byte, error) {
+	if len(compiled.Snapshot().Workflow.Inputs) != 0 {
+		return nil, executionError(errWorkflowInputs)
+	}
+
 	result, err := runtime.Run(ctx, compiled, bundledModelResolver(cfg))
 	if err != nil {
 		if errors.Is(err, context.Canceled) {

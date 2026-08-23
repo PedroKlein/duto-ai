@@ -218,28 +218,68 @@ func propertiesByName(properties []Property) map[string]Property {
 }
 
 func assignable(source, target Schema) bool {
-	if source.Type != target.Type {
+	if source.Type != target.Type && (source.Type != TypeInteger || target.Type != TypeNumber) {
 		return false
 	}
 
 	switch source.Type {
 	case TypeString:
-		return source.MaxLength <= target.MaxLength
+		return stringAssignable(source, target)
 	case TypeArray:
-		return source.MaxItems <= target.MaxItems && source.Items != nil && target.Items != nil && assignable(*source.Items, *target.Items)
+		return (target.MaxItems == 0 || source.MaxItems <= target.MaxItems) && source.Items != nil && target.Items != nil && assignable(*source.Items, *target.Items)
 	case TypeObject:
-		sourceProperties := propertiesByName(source.Properties)
-		for _, targetProperty := range target.Properties {
-			sourceProperty, exists := sourceProperties[targetProperty.Name]
-			if !exists || !assignable(sourceProperty.Schema, targetProperty.Schema) {
-				return false
-			}
-		}
-
-		return true
-	case TypeInteger, TypeNumber, TypeBoolean:
+		return objectAssignable(source, target)
+	case TypeInteger, TypeNumber:
+		return numericAssignable(source, target)
+	case TypeBoolean:
 		return true
 	default:
 		return false
 	}
+}
+
+func stringAssignable(source, target Schema) bool {
+	if target.MaxLength > 0 && source.MaxLength > target.MaxLength {
+		return false
+	}
+
+	if len(target.Enum) == 0 {
+		return true
+	}
+
+	if len(source.Enum) == 0 {
+		return false
+	}
+
+	for _, value := range source.Enum {
+		if !slices.Contains(target.Enum, value) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func objectAssignable(source, target Schema) bool {
+	sourceProperties := propertiesByName(source.Properties)
+	for _, targetProperty := range target.Properties {
+		sourceProperty, exists := sourceProperties[targetProperty.Name]
+		if !exists || !assignable(sourceProperty.Schema, targetProperty.Schema) {
+			return false
+		}
+
+		if slices.Contains(target.Required, targetProperty.Name) && !slices.Contains(source.Required, targetProperty.Name) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func numericAssignable(source, target Schema) bool {
+	if target.Minimum != nil && (source.Minimum == nil || *source.Minimum < *target.Minimum) {
+		return false
+	}
+
+	return target.Maximum == nil || (source.Maximum != nil && *source.Maximum <= *target.Maximum)
 }

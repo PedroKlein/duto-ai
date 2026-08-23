@@ -22,11 +22,27 @@ type InstructionKind uint8
 const (
 	InstructionUnknown InstructionKind = iota
 	InstructionText
+	InstructionFile
+	InstructionTemplate
+	InstructionTemplateFile
 )
 
+type FileSource struct {
+	Workspace string
+	Path      string
+	MaxBytes  int
+}
+
 type Instruction struct {
-	Kind InstructionKind
-	Text string
+	Kind           InstructionKind
+	Text           string
+	File           FileSource
+	MaxOutputBytes int
+}
+
+type SkillSource struct {
+	Workspace string
+	Path      string
 }
 
 type Schema struct {
@@ -57,25 +73,42 @@ type BindingKind uint8
 const (
 	BindingUnknown BindingKind = iota
 	BindingInput
+	BindingOutput
 	BindingLiteral
 )
 
+type OutputRef struct {
+	Step string
+	Path []string
+}
+
 type Binding struct {
-	Kind    BindingKind
-	Input   string
-	Literal string
+	Kind     BindingKind
+	Input    string
+	Output   OutputRef
+	Literal  any
+	Optional bool
+}
+
+type Condition struct {
+	Step     string
+	Outcomes []string
 }
 
 type Step struct {
 	ID          string
 	Needs       []string
+	Wait        string
+	When        []Condition
 	Instruction Instruction
 	Model       string
 	ModelConfig ModelConfig
 	Tools       []string
+	Skills      []string
 	Workspaces  []WorkspaceRef
 	Input       Schema
 	With        map[string]Binding
+	WithOrder   []string
 	Output      Schema
 	Limits      Limits
 }

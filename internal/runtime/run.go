@@ -22,11 +22,16 @@ import (
 )
 
 var (
-	ErrExecution      = errors.New("workflow execution error")
-	errTerminalOutput = errors.New("terminal output is not an object")
+	ErrExecution         = errors.New("workflow execution error")
+	errTerminalOutput    = errors.New("terminal output is not an object")
+	errAmbiguousTerminal = errors.New("ambiguous terminal result")
 )
 
 func Run(ctx context.Context, compiled *plan.Plan, resolve compiler.ModelResolver) (*Result, error) {
+	return RunWithInputs(ctx, compiled, resolve, map[string]any{})
+}
+
+func RunWithInputs(ctx context.Context, compiled *plan.Plan, resolve compiler.ModelResolver, inputs map[string]any) (*Result, error) {
 	started := time.Now().UTC()
 
 	runID, err := newRunID()
@@ -35,6 +40,14 @@ func Run(ctx context.Context, compiled *plan.Plan, resolve compiler.ModelResolve
 	}
 
 	result := newResult(compiled, runID, started)
+
+	if validationErr := compiler.ValidateInputs(compiled, inputs); validationErr != nil {
+		result.Status = StatusFailed
+		result.FinishedAt = time.Now().UTC()
+		result.Errors = append(result.Errors, ResultError{Kind: "input"})
+
+		return result, ErrExecution
+	}
 
 	root, err := compiler.Compile(ctx, compiled, resolve)
 	if err != nil {
@@ -66,7 +79,16 @@ func Run(ctx context.Context, compiled *plan.Plan, resolve compiler.ModelResolve
 		return nil, fmt.Errorf("creating runner: %w", err)
 	}
 
-	runErr := consumeEvents(ctx, r, runID, result)
+	encodedInputs, err := json.Marshal(inputs)
+	if err != nil {
+		result.Status = StatusFailed
+		result.FinishedAt = time.Now().UTC()
+		result.Errors = append(result.Errors, ResultError{Kind: "input"})
+
+		return result, ErrExecution
+	}
+
+	runErr := consumeEvents(ctx, r, runID, string(encodedInputs), result)
 	finishResult(result, ctx.Err(), runErr)
 
 	if err := writer.finish(result.Status); err != nil {
@@ -95,10 +117,17 @@ func Run(ctx context.Context, compiled *plan.Plan, resolve compiler.ModelResolve
 	}
 }
 
-func consumeEvents(ctx context.Context, r *runner.Runner, runID string, result *Result) error {
+func consumeEvents(ctx context.Context, r *runner.Runner, runID, inputs string, result *Result) error { //nolint:gocyclo // One fold keeps event and terminal status semantics consistent.
 	var runErr error
 
-	for event, iterationErr := range r.Run(ctx, "duto", runID, genai.NewContentFromText("{}", genai.RoleUser), agent.RunConfig{}) {
+	terminalOutputs := make([]map[string]any, 0, 1)
+
+	stepIndices := make(map[string]int, len(result.Steps))
+	for i, step := range result.Steps {
+		stepIndices[step.ID] = i
+	}
+
+	for event, iterationErr := range r.Run(ctx, "duto", runID, genai.NewContentFromText(inputs, genai.RoleUser), agent.RunConfig{}) {
 		if iterationErr != nil {
 			if runErr == nil {
 				runErr = iterationErr
@@ -111,26 +140,41 @@ func consumeEvents(ctx context.Context, r *runner.Runner, runID string, result *
 			continue
 		}
 
+		stepID := eventNodeName(event)
 		if usage := usageFromEvent(event); usage != nil {
 			result.Usage = usage
-			result.Steps[0].Usage = usage
+			if index, ok := stepIndices[stepID]; ok {
+				result.Steps[index].Usage = usage
+			}
 		}
 
-		if event.Partial || !isTerminalEvent(event) || event.Output == nil {
+		if event.Partial || event.Output == nil {
 			continue
 		}
 
 		output, outputErr := cloneObject(event.Output)
 		if outputErr != nil {
-			if runErr == nil {
-				runErr = outputErr
-			}
-
 			continue
 		}
 
-		result.Output = output
-		result.Steps[0].Output = output
+		if index, ok := stepIndices[stepID]; ok {
+			result.Steps[index].Output = output
+			result.Steps[index].Status = StatusSucceeded
+		}
+
+		if isTerminalEvent(event) {
+			terminalOutputs = append(terminalOutputs, output)
+		}
+	}
+
+	if runErr == nil {
+		switch len(terminalOutputs) {
+		case 1:
+			result.Output = terminalOutputs[0]
+		case 0:
+		default:
+			runErr = errAmbiguousTerminal
+		}
 	}
 
 	return runErr
@@ -177,20 +221,32 @@ func finishResult(result *Result, contextErr, runErr error) {
 		result.Outcome, _ = result.Output["outcome"].(string)
 	}
 
-	for i := range result.Steps {
-		result.Steps[i].Status = result.Status
+	if result.Status == StatusSucceeded {
+		for i := range result.Steps {
+			if result.Steps[i].Status == StatusIncomplete {
+				result.Steps[i].Status = StatusSkipped
+			}
+		}
 	}
 }
 
 func isTerminalEvent(event *session.Event) bool {
-	if event.NodeInfo == nil {
-		return false
+	return strings.HasPrefix(eventNodeName(event), compiler.TerminalNodeName+"-")
+}
+
+func eventNodeName(event *session.Event) string {
+	if event == nil || event.NodeInfo == nil {
+		return ""
 	}
 
 	path := event.NodeInfo.Path
-	segment := path[strings.LastIndex(path, "/")+1:]
 
-	return strings.HasPrefix(segment, compiler.TerminalNodeName+"@")
+	segment := path[strings.LastIndex(path, "/")+1:]
+	if index := strings.LastIndex(segment, "@"); index >= 0 {
+		segment = segment[:index]
+	}
+
+	return segment
 }
 
 func cloneObject(value any) (map[string]any, error) {

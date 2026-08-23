@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/PedroKlein/duto-ai/internal/config"
+	"github.com/PedroKlein/duto-ai/internal/prompt"
 )
 
 const Version = 1
@@ -34,15 +35,16 @@ type Projection struct {
 }
 
 type Workflow struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	Model       string      `json:"model"`
-	ModelConfig ModelConfig `json:"model_config"`
-	Inputs      []Property  `json:"inputs"`
-	Tools       []string    `json:"tools"`
-	Limits      Limits      `json:"limits"`
-	Steps       []Step      `json:"steps"`
-	Result      Result      `json:"result"`
+	Name        string               `json:"name"`
+	Description string               `json:"description,omitempty"`
+	Model       string               `json:"model"`
+	ModelConfig ModelConfig          `json:"model_config"`
+	Inputs      []Property           `json:"inputs"`
+	Tools       []string             `json:"tools"`
+	Limits      Limits               `json:"limits"`
+	Skills      []prompt.FrozenSkill `json:"skills"`
+	Steps       []Step               `json:"steps"`
+	Result      Result               `json:"result"`
 }
 
 type ModelConfig struct {
@@ -61,29 +63,57 @@ type Limits struct {
 }
 
 type Step struct {
-	ID          string      `json:"id"`
-	Needs       []string    `json:"needs"`
-	Instruction string      `json:"instruction"`
-	Model       string      `json:"model"`
-	ModelConfig ModelConfig `json:"model_config"`
-	Tools       []string    `json:"tools"`
-	Input       Schema      `json:"input"`
-	Bindings    []Binding   `json:"bindings"`
-	Output      Schema      `json:"output"`
-	Limits      Limits      `json:"limits"`
+	ID          string        `json:"id"`
+	Needs       []string      `json:"needs"`
+	When        []Condition   `json:"when,omitempty"`
+	Instruction prompt.Frozen `json:"instruction"`
+	Model       string        `json:"model"`
+	ModelConfig ModelConfig   `json:"model_config"`
+	Tools       []string      `json:"tools"`
+	Skills      []string      `json:"skills"`
+	Workspaces  []Workspace   `json:"workspaces"`
+	Input       Schema        `json:"input"`
+	Bindings    []Binding     `json:"bindings"`
+	Output      Schema        `json:"output"`
+	Limits      Limits        `json:"limits"`
+}
+
+type Workspace struct {
+	Name   string `json:"name"`
+	Access string `json:"access"`
 }
 
 type Binding struct {
-	Name    string `json:"name"`
-	Kind    string `json:"kind"`
-	Input   string `json:"input,omitempty"`
-	Literal string `json:"literal,omitempty"`
+	Name     string   `json:"name"`
+	Kind     string   `json:"kind"`
+	Input    string   `json:"input,omitempty"`
+	Step     string   `json:"step,omitempty"`
+	Path     []string `json:"path,omitempty"`
+	Literal  any      `json:"literal,omitempty"`
+	Optional bool     `json:"optional,omitempty"`
+}
+
+type Condition struct {
+	Step     string   `json:"step"`
+	Outcomes []string `json:"outcomes"`
+}
+
+type ResultRoute struct {
+	Step    string `json:"step"`
+	Outcome string `json:"outcome"`
+	Schema  Schema `json:"schema"`
+}
+
+type terminalPair struct {
+	step    string
+	outcome string
 }
 
 type Result struct {
-	Step     string   `json:"step"`
-	Outcomes []string `json:"outcomes"`
-	Schema   Schema   `json:"schema"`
+	Step     string        `json:"step,omitempty"`
+	Outcomes []string      `json:"outcomes,omitempty"`
+	Routes   []ResultRoute `json:"routes,omitempty"`
+	Schema   Schema        `json:"schema"`
 }
 
 type Plan struct {
@@ -128,7 +158,12 @@ func Compile(cfg *config.Config, workflow *config.Workflow) (*Plan, error) {
 		return nil, fmt.Errorf("workflow inputs: %w", err)
 	}
 
-	steps, err := compileSteps(workflow, inputs, limits)
+	workspaceRoots, frozenSkills, err := compilePromptResources(cfg, workflow)
+	if err != nil {
+		return nil, err
+	}
+
+	steps, err := compileSteps(workflow, inputs, limits, workspaceRoots, frozenSkills)
 	if err != nil {
 		return nil, err
 	}
@@ -149,6 +184,7 @@ func Compile(cfg *config.Config, workflow *config.Workflow) (*Plan, error) {
 			Inputs:      inputs,
 			Tools:       []string{},
 			Limits:      limits,
+			Skills:      frozenSkills,
 			Steps:       steps,
 			Result:      result,
 		},
@@ -168,6 +204,27 @@ func Compile(cfg *config.Config, workflow *config.Workflow) (*Plan, error) {
 	}
 
 	return &Plan{json: encoded, digest: projection.Digest, evidenceDirectory: cfg.Evidence.Directory}, nil
+}
+
+func compilePromptResources(cfg *config.Config, workflow *config.Workflow) (map[string]string, []prompt.FrozenSkill, error) {
+	workspaceRoots := make(map[string]string, len(cfg.Workspaces))
+	for name, workspace := range cfg.Workspaces {
+		if workspace.Access == "read" {
+			workspaceRoots[name] = workspace.Root
+		}
+	}
+
+	skillRequests := make(map[string]prompt.SkillRequest, len(workflow.Skills))
+	for name, source := range workflow.Skills {
+		skillRequests[name] = prompt.SkillRequest{Workspace: source.Workspace, Path: source.Path}
+	}
+
+	frozenSkills, err := prompt.FreezeSkills(skillRequests, workspaceRoots)
+	if err != nil {
+		return nil, nil, fmt.Errorf("freezing skills: %w", err)
+	}
+
+	return workspaceRoots, frozenSkills, nil
 }
 
 func (p *Plan) Digest() string {
@@ -229,15 +286,34 @@ func resolveModels(cfg *config.Config, workflow *config.Workflow) ([]string, err
 	return models, nil
 }
 
-func compileSteps(workflow *config.Workflow, workflowInputs []Property, workflowLimits Limits) ([]Step, error) {
+func compileSteps(workflow *config.Workflow, workflowInputs []Property, workflowLimits Limits, workspaceRoots map[string]string, skills []prompt.FrozenSkill) ([]Step, error) { //nolint:gocyclo // Compilation follows the fixed admission sequence.
 	steps := make([]Step, 0, len(workflow.Steps))
 	for _, source := range workflow.Steps {
-		if len(source.Tools) != 0 || len(source.Workspaces) != 0 {
+		if len(source.Needs) > 1 && source.Wait != "all_succeeded" {
+			return nil, fmt.Errorf("step %q fan-in: %w", source.ID, ErrInvalidBinding)
+		}
+
+		if len(source.Tools) != 0 {
 			return nil, fmt.Errorf("step %q capabilities: %w", source.ID, ErrUnsupportedCapability)
 		}
 
-		if err := validateModelConfig(source.ModelConfig); err != nil {
-			return nil, fmt.Errorf("step %q model config: %w", source.ID, err)
+		workspaces, err := compileWorkspaces(source.Workspaces, workspaceRoots)
+		if err != nil {
+			return nil, fmt.Errorf("step %q workspaces: %w", source.ID, err)
+		}
+
+		instruction, err := compileInstruction(source.Instruction, workspaces, workspaceRoots)
+		if err != nil {
+			return nil, fmt.Errorf("step %q instruction: %w", source.ID, err)
+		}
+
+		selectedSkills, err := compileSelectedSkills(source.Skills, workspaces, skills)
+		if err != nil {
+			return nil, fmt.Errorf("step %q skills: %w", source.ID, err)
+		}
+
+		if validationErr := validateModelConfig(source.ModelConfig); validationErr != nil {
+			return nil, fmt.Errorf("step %q model config: %w", source.ID, validationErr)
 		}
 
 		input, err := compileSchema(source.Input, 0)
@@ -254,7 +330,7 @@ func compileSteps(workflow *config.Workflow, workflowInputs []Property, workflow
 			return nil, fmt.Errorf("step %q output: %w", source.ID, validationErr)
 		}
 
-		bindings, err := compileBindings(source, input, workflowInputs)
+		bindings, err := compileBindings(source, input, workflowInputs, workflow.Steps)
 		if err != nil {
 			return nil, fmt.Errorf("step %q: %w", source.ID, err)
 		}
@@ -269,13 +345,21 @@ func compileSteps(workflow *config.Workflow, workflowInputs []Property, workflow
 			model = workflow.Model
 		}
 
+		conditions, err := compileConditions(source, workflow.Steps)
+		if err != nil {
+			return nil, fmt.Errorf("step %q conditions: %w", source.ID, err)
+		}
+
 		steps = append(steps, Step{
 			ID:          source.ID,
 			Needs:       slices.Clone(source.Needs),
-			Instruction: source.Instruction.Text,
+			When:        conditions,
+			Instruction: instruction,
 			Model:       model,
 			ModelConfig: compileModelConfig(source.ModelConfig, compileModelConfig(workflow.ModelConfig, ModelConfig{})),
 			Tools:       []string{},
+			Skills:      selectedSkills,
+			Workspaces:  workspaces,
 			Input:       input,
 			Bindings:    bindings,
 			Output:      output,
@@ -284,6 +368,96 @@ func compileSteps(workflow *config.Workflow, workflowInputs []Property, workflow
 	}
 
 	return steps, nil
+}
+
+func compileWorkspaces(source []config.WorkspaceRef, roots map[string]string) ([]Workspace, error) {
+	result := make([]Workspace, 0, len(source))
+
+	seen := make(map[string]struct{}, len(source))
+	for _, workspace := range source {
+		if workspace.Access != "read" || roots[workspace.Name] == "" {
+			return nil, ErrUnsupportedCapability
+		}
+
+		if _, exists := seen[workspace.Name]; exists {
+			return nil, ErrUnsupportedCapability
+		}
+
+		seen[workspace.Name] = struct{}{}
+		result = append(result, Workspace{Name: workspace.Name, Access: workspace.Access})
+	}
+
+	return result, nil
+}
+
+func compileInstruction(source config.Instruction, workspaces []Workspace, roots map[string]string) (prompt.Frozen, error) {
+	request := prompt.Source{}
+
+	switch source.Kind {
+	case config.InstructionText:
+		request.Kind = prompt.KindText
+		request.Text = source.Text
+	case config.InstructionFile:
+		request.Kind = prompt.KindFile
+		request.File = prompt.FileSource{Workspace: source.File.Workspace, Path: source.File.Path, MaxBytes: source.File.MaxBytes}
+	case config.InstructionTemplate:
+		request.Kind = prompt.KindTemplate
+		request.Text = source.Text
+		request.MaxOutputBytes = source.MaxOutputBytes
+	case config.InstructionTemplateFile:
+		request.Kind = prompt.KindTemplateFile
+		request.File = prompt.FileSource{Workspace: source.File.Workspace, Path: source.File.Path, MaxBytes: source.File.MaxBytes}
+		request.MaxOutputBytes = source.MaxOutputBytes
+	default:
+		return prompt.Frozen{}, prompt.ErrInvalidSource
+	}
+
+	if request.File.Workspace != "" && !containsWorkspace(workspaces, request.File.Workspace) {
+		return prompt.Frozen{}, ErrUnsupportedCapability
+	}
+
+	frozen, err := prompt.Admit(request, roots)
+	if err != nil {
+		return prompt.Frozen{}, fmt.Errorf("admitting instruction: %w", err)
+	}
+
+	return frozen, nil
+}
+
+func compileSelectedSkills(selected []string, workspaces []Workspace, skills []prompt.FrozenSkill) ([]string, error) {
+	available := make(map[string]prompt.FrozenSkill, len(skills))
+	for _, skill := range skills {
+		available[skill.Name] = skill
+	}
+
+	result := make([]string, 0, len(selected))
+
+	seen := make(map[string]struct{}, len(selected))
+	for _, name := range selected {
+		skill, exists := available[name]
+		if !exists || !containsWorkspace(workspaces, skill.Workspace) {
+			return nil, ErrUnsupportedCapability
+		}
+
+		if _, duplicate := seen[name]; duplicate {
+			return nil, ErrUnsupportedCapability
+		}
+
+		seen[name] = struct{}{}
+		result = append(result, name)
+	}
+
+	return result, nil
+}
+
+func containsWorkspace(workspaces []Workspace, name string) bool {
+	for _, workspace := range workspaces {
+		if workspace.Name == name {
+			return true
+		}
+	}
+
+	return false
 }
 
 func validateModelConfig(modelConfig config.ModelConfig) error {
@@ -422,7 +596,7 @@ func positive(values ...int) bool {
 	return true
 }
 
-func compileBindings(step config.Step, input Schema, workflowInputs []Property) ([]Binding, error) {
+func compileBindings(step config.Step, input Schema, workflowInputs []Property, allSteps []config.Step) ([]Binding, error) { //nolint:gocyclo,gocognit // The closed three-source union is validated in one pass.
 	if input.Type != TypeObject {
 		return nil, ErrInvalidBinding
 	}
@@ -431,30 +605,48 @@ func compileBindings(step config.Step, input Schema, workflowInputs []Property) 
 	workflowProperties := propertiesByName(workflowInputs)
 	bindings := make([]Binding, 0, len(step.With))
 
-	for _, property := range input.Properties {
-		source, exists := step.With[property.Name]
-		if !exists {
-			if slices.Contains(input.Required, property.Name) {
-				return nil, ErrInvalidBinding
-			}
-
-			continue
+	for _, name := range step.WithOrder {
+		property, targetExists := properties[name]
+		if !targetExists {
+			return nil, ErrInvalidBinding
 		}
+
+		source, exists := step.With[name]
+		if !exists {
+			return nil, ErrInvalidBinding
+		}
+
+		target := property.Schema
 
 		switch source.Kind {
 		case config.BindingInput:
 			workflowProperty, found := workflowProperties[source.Input]
-			if !found || !assignable(workflowProperty.Schema, properties[property.Name].Schema) {
+			if !found || !assignable(workflowProperty.Schema, target) {
 				return nil, ErrInvalidBinding
 			}
 
-			bindings = append(bindings, Binding{Name: property.Name, Kind: "input", Input: source.Input})
+			bindings = append(bindings, Binding{Name: name, Kind: "input", Input: source.Input})
+		case config.BindingOutput:
+			sourceSchema, required, found := outputPathSchema(source.Output, allSteps)
+			if !found || !isAncestor(source.Output.Step, step.ID, allSteps) || !assignable(sourceSchema, target) {
+				return nil, ErrInvalidBinding
+			}
+
+			if source.Optional {
+				if slices.Contains(input.Required, name) {
+					return nil, ErrInvalidBinding
+				}
+			} else if !required {
+				return nil, ErrInvalidBinding
+			}
+
+			bindings = append(bindings, Binding{Name: name, Kind: "output", Step: source.Output.Step, Path: slices.Clone(source.Output.Path), Optional: source.Optional})
 		case config.BindingLiteral:
-			if property.Schema.Type != TypeString {
+			if !literalAssignable(source.Literal, target) {
 				return nil, ErrInvalidBinding
 			}
 
-			bindings = append(bindings, Binding{Name: property.Name, Kind: "literal", Literal: source.Literal})
+			bindings = append(bindings, Binding{Name: name, Kind: "literal", Literal: source.Literal})
 		default:
 			return nil, ErrInvalidBinding
 		}
@@ -464,37 +656,328 @@ func compileBindings(step config.Step, input Schema, workflowInputs []Property) 
 		return nil, ErrInvalidBinding
 	}
 
-	return bindings, nil
-}
-
-func compileResult(workflow *config.Workflow, steps []Step) (Result, error) {
-	terminal := make(map[string]bool, len(steps))
-	outputs := make(map[string]Schema, len(steps))
-
-	for _, step := range steps {
-		terminal[step.ID] = true
-		outputs[step.ID] = step.Output
-	}
-
-	for _, step := range steps {
-		for _, dependency := range step.Needs {
-			terminal[dependency] = false
+	for _, property := range input.Required {
+		if _, exists := step.With[property]; !exists {
+			return nil, ErrInvalidBinding
 		}
 	}
 
-	if !terminal[workflow.Result.Step] {
+	return bindings, nil
+}
+
+func compileConditions(step config.Step, allSteps []config.Step) ([]Condition, error) {
+	needs := make(map[string]struct{}, len(step.Needs))
+	for _, need := range step.Needs {
+		needs[need] = struct{}{}
+	}
+
+	conditions := make([]Condition, 0, len(step.When))
+
+	seen := make(map[string]struct{}, len(step.When))
+	for _, source := range step.When {
+		if _, ok := needs[source.Step]; !ok {
+			return nil, ErrInvalidBinding
+		}
+
+		if _, duplicate := seen[source.Step]; duplicate {
+			return nil, ErrInvalidBinding
+		}
+
+		output, ok := stepOutput(source.Step, allSteps)
+		if !ok {
+			return nil, ErrInvalidBinding
+		}
+
+		outcome := propertiesByName(output.Properties)["outcome"].Schema.Enum
+		for _, value := range source.Outcomes {
+			if !slices.Contains(outcome, value) {
+				return nil, ErrInvalidBinding
+			}
+		}
+
+		seen[source.Step] = struct{}{}
+		conditions = append(conditions, Condition{Step: source.Step, Outcomes: slices.Clone(source.Outcomes)})
+	}
+
+	return conditions, nil
+}
+
+func outputPathSchema(ref config.OutputRef, allSteps []config.Step) (Schema, bool, bool) {
+	output, ok := stepOutput(ref.Step, allSteps)
+	if !ok {
+		return Schema{}, false, false
+	}
+
+	current := output
+	required := true
+
+	for _, part := range ref.Path {
+		if current.Type != TypeObject {
+			return Schema{}, false, false
+		}
+
+		property, exists := propertiesByName(current.Properties)[part]
+		if !exists {
+			return Schema{}, false, false
+		}
+
+		required = required && slices.Contains(current.Required, part)
+		current = property.Schema
+	}
+
+	return current, required, true
+}
+
+func stepOutput(id string, allSteps []config.Step) (Schema, bool) {
+	for _, step := range allSteps {
+		if step.ID != id {
+			continue
+		}
+
+		output, err := compileSchema(step.Output, 0)
+
+		return output, err == nil
+	}
+
+	return Schema{}, false
+}
+
+func isAncestor(candidate, stepID string, allSteps []config.Step) bool {
+	needs := make(map[string][]string, len(allSteps))
+	for _, step := range allSteps {
+		needs[step.ID] = step.Needs
+	}
+
+	seen := map[string]bool{}
+
+	var visit func(string) bool
+
+	visit = func(id string) bool {
+		if seen[id] {
+			return false
+		}
+
+		seen[id] = true
+		for _, need := range needs[id] {
+			if need == candidate || visit(need) {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	return visit(stepID)
+}
+
+func literalAssignable(value any, schema Schema) bool {
+	switch typed := value.(type) {
+	case string:
+		return schema.Type == TypeString && (schema.MaxLength == 0 || len([]rune(typed)) <= schema.MaxLength) && (len(schema.Enum) == 0 || slices.Contains(schema.Enum, typed))
+	case bool:
+		return schema.Type == TypeBoolean
+	case int:
+		return (schema.Type == TypeInteger || schema.Type == TypeNumber) && withinNumericBounds(float64(typed), schema)
+	case float64:
+		return schema.Type == TypeNumber && withinNumericBounds(typed, schema)
+	default:
+		return false
+	}
+}
+
+func withinNumericBounds(value float64, schema Schema) bool {
+	return (schema.Minimum == nil || value >= *schema.Minimum) && (schema.Maximum == nil || value <= *schema.Maximum)
+}
+
+func compileResult(workflow *config.Workflow, steps []Step) (Result, error) {
+	outputs := make(map[string]Schema, len(steps))
+	for _, step := range steps {
+		outputs[step.ID] = step.Output
+	}
+
+	terminals := make(map[terminalPair]Schema)
+
+	for _, step := range steps {
+		outcomes := propertiesByName(step.Output.Properties)["outcome"].Schema.Enum
+		for _, outcome := range outcomes {
+			if !outcomeConsumed(step.ID, outcome, steps) {
+				terminals[terminalPair{step.ID, outcome}] = step.Output
+			}
+		}
+	}
+
+	if len(terminals) == 0 || terminalPairsCanOverlap(terminals, steps) {
 		return Result{}, ErrInvalidResult
 	}
 
-	output, exists := outputs[workflow.Result.Step]
+	if workflow.Result.Step != "" {
+		return compileDirectResult(workflow.Result.Step, outputs, terminals)
+	}
+
+	return compileRoutedResult(workflow.Result.Routes, terminals)
+}
+
+func compileDirectResult(step string, outputs map[string]Schema, terminals map[terminalPair]Schema) (Result, error) {
+	output, exists := outputs[step]
 	if !exists {
 		return Result{}, ErrInvalidResult
 	}
 
-	outcome, exists := propertiesByName(output.Properties)["outcome"]
-	if !exists || len(outcome.Schema.Enum) == 0 {
+	outcomes := propertiesByName(output.Properties)["outcome"].Schema.Enum
+	if len(terminals) != len(outcomes) {
 		return Result{}, ErrInvalidResult
 	}
 
-	return Result{Step: workflow.Result.Step, Outcomes: slices.Clone(outcome.Schema.Enum), Schema: output}, nil
+	for _, outcome := range outcomes {
+		if _, ok := terminals[terminalPair{step, outcome}]; !ok {
+			return Result{}, ErrInvalidResult
+		}
+	}
+
+	return Result{Step: step, Outcomes: slices.Clone(outcomes), Schema: output}, nil
+}
+
+func compileRoutedResult(source []config.ResultRoute, terminals map[terminalPair]Schema) (Result, error) {
+	routes := make([]ResultRoute, 0, len(source))
+	covered := make(map[terminalPair]struct{}, len(source))
+
+	var resultSchema Schema
+
+	outcomeSchemas := make(map[string]Schema)
+
+	for _, route := range source {
+		key := terminalPair{route.Step, route.When.Outcome}
+
+		output, exists := terminals[key]
+		if route.Step != route.When.Step || !exists {
+			return Result{}, ErrInvalidResult
+		}
+
+		if _, duplicate := covered[key]; duplicate {
+			return Result{}, ErrInvalidResult
+		}
+
+		if prior, duplicateOutcome := outcomeSchemas[route.When.Outcome]; duplicateOutcome && !schemasEqual(prior, output) {
+			return Result{}, ErrInvalidResult
+		}
+
+		covered[key] = struct{}{}
+
+		outcomeSchemas[route.When.Outcome] = output
+		if len(routes) == 0 {
+			resultSchema = output
+		}
+
+		routes = append(routes, ResultRoute{Step: route.Step, Outcome: route.When.Outcome, Schema: output})
+	}
+
+	if len(covered) != len(terminals) {
+		return Result{}, ErrInvalidResult
+	}
+
+	return Result{Routes: routes, Schema: resultSchema}, nil
+}
+
+func terminalPairsCanOverlap(terminals map[terminalPair]Schema, steps []Step) bool {
+	keys := make([]terminalPair, 0, len(terminals))
+	for key := range terminals {
+		keys = append(keys, key)
+	}
+
+	for i := range keys {
+		left := terminalConstraints(keys[i].step, keys[i].outcome, steps)
+		for j := i + 1; j < len(keys); j++ {
+			right := terminalConstraints(keys[j].step, keys[j].outcome, steps)
+			if !constraintsConflict(left, right) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func terminalConstraints(stepID, outcome string, steps []Step) map[string][]string {
+	constraints := map[string][]string{stepID: {outcome}}
+	seen := map[string]bool{}
+
+	var visit func(string)
+
+	visit = func(id string) {
+		if seen[id] {
+			return
+		}
+
+		seen[id] = true
+		for _, step := range steps {
+			if step.ID != id {
+				continue
+			}
+
+			for _, condition := range step.When {
+				constraints[condition.Step] = slices.Clone(condition.Outcomes)
+			}
+
+			for _, need := range step.Needs {
+				visit(need)
+			}
+
+			return
+		}
+	}
+	visit(stepID)
+
+	return constraints
+}
+
+func constraintsConflict(left, right map[string][]string) bool {
+	for step, leftValues := range left {
+		rightValues, ok := right[step]
+		if !ok {
+			continue
+		}
+
+		for _, value := range leftValues {
+			if slices.Contains(rightValues, value) {
+				return false
+			}
+		}
+
+		return true
+	}
+
+	return false
+}
+
+func outcomeConsumed(stepID, outcome string, steps []Step) bool {
+	for _, successor := range steps {
+		if !slices.Contains(successor.Needs, stepID) {
+			continue
+		}
+
+		conditioned := false
+
+		for _, condition := range successor.When {
+			if condition.Step == stepID {
+				conditioned = true
+
+				if slices.Contains(condition.Outcomes, outcome) {
+					return true
+				}
+			}
+		}
+
+		if !conditioned {
+			return true
+		}
+	}
+
+	return false
+}
+
+func schemasEqual(left, right Schema) bool {
+	leftJSON, _ := json.Marshal(left)
+	rightJSON, _ := json.Marshal(right)
+
+	return bytes.Equal(leftJSON, rightJSON)
 }

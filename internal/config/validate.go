@@ -20,7 +20,7 @@ var (
 
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 
-func ValidateWorkflow(workflow *Workflow) error {
+func ValidateWorkflow(workflow *Workflow) error { //nolint:gocyclo // The closed graph validation order is intentionally linear.
 	if workflow == nil {
 		return ErrNilWorkflow
 	}
@@ -58,8 +58,20 @@ func ValidateWorkflow(workflow *Workflow) error {
 		}
 	}
 
-	if _, exists := ids[workflow.Result.Step]; !exists {
-		return ErrUnknownResultStep
+	if workflow.Result.Step != "" {
+		if _, exists := ids[workflow.Result.Step]; !exists {
+			return ErrUnknownResultStep
+		}
+	}
+
+	for _, route := range workflow.Result.Routes {
+		if route.Step != route.When.Step {
+			return ErrUnknownResultStep
+		}
+
+		if _, exists := ids[route.Step]; !exists {
+			return ErrUnknownResultStep
+		}
 	}
 
 	_, err := TopologicalSort(workflow.Steps)
@@ -117,7 +129,7 @@ func TopologicalSort(steps []Step) ([]Step, error) {
 	return sorted, nil
 }
 
-func validateDecodedWorkflow(name string, workflow *Workflow, rootFields map[string]*yaml.Node, stepsNode *yaml.Node) error {
+func validateDecodedWorkflow(name string, workflow *Workflow, rootFields map[string]*yaml.Node, stepsNode *yaml.Node) error { //nolint:gocyclo // Source diagnostics mirror the closed graph checks.
 	if !namePattern.MatchString(workflow.Name) {
 		return diagnostic(name, "$.name", rootFields["name"], CodeInvalidValue)
 	}
@@ -132,7 +144,7 @@ func validateDecodedWorkflow(name string, workflow *Workflow, rootFields map[str
 
 	ids := make(map[string]int, len(workflow.Steps))
 	for i, step := range workflow.Steps {
-		stepFields, err := mappingFields(name, stepsNode.Content[i], fmt.Sprintf("$.steps[%d]", i), "id", "needs", "instruction", "model", "model_config", "tools", "workspaces", "input", "with", "output", "limits")
+		stepFields, err := mappingFields(name, stepsNode.Content[i], fmt.Sprintf("$.steps[%d]", i), "id", "needs", "wait", "when", "instruction", "model", "model_config", "tools", "skills", "workspaces", "input", "with", "output", "limits")
 		if err != nil {
 			return err
 		}
@@ -156,8 +168,20 @@ func validateDecodedWorkflow(name string, workflow *Workflow, rootFields map[str
 		}
 	}
 
-	if _, exists := ids[workflow.Result.Step]; !exists {
-		return diagnostic(name, "$.result.step", rootFields["result"], CodeInvalidValue)
+	if workflow.Result.Step != "" {
+		if _, exists := ids[workflow.Result.Step]; !exists {
+			return diagnostic(name, "$.result.step", rootFields["result"], CodeInvalidValue)
+		}
+	}
+
+	for _, route := range workflow.Result.Routes {
+		if route.Step != route.When.Step {
+			return diagnostic(name, "$.result.routes", rootFields["result"], CodeInvalidValue)
+		}
+
+		if _, exists := ids[route.Step]; !exists {
+			return diagnostic(name, "$.result.routes", rootFields["result"], CodeInvalidValue)
+		}
 	}
 
 	if _, err := TopologicalSort(workflow.Steps); err != nil {

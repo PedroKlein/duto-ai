@@ -2,29 +2,61 @@ package compiler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool/skilltoolset"
 	"google.golang.org/adk/v2/workflow"
 	"google.golang.org/genai"
 
 	"github.com/PedroKlein/duto-ai/internal/plan"
+	"github.com/PedroKlein/duto-ai/internal/prompt"
 )
 
 const TerminalNodeName = "duto-terminal-result"
 
+const (
+	workflowInputNodeName = "duto-workflow-inputs"
+	runRoute              = "run"
+)
+
 var (
-	ErrNilPlan          = errors.New("plan is nil")
-	ErrNilResolver      = errors.New("model resolver is nil")
-	ErrNilResolvedModel = errors.New("model resolver returned nil")
-	ErrUnsupportedPlan  = errors.New("plan is outside the no-tools tracer")
+	ErrNilPlan           = errors.New("plan is nil")
+	ErrNilResolver       = errors.New("model resolver is nil")
+	ErrNilResolvedModel  = errors.New("model resolver returned nil")
+	ErrInvalidInput      = errors.New("workflow input is invalid")
+	errInstructionInputs = errors.New("step inputs for instruction are not an object")
+	errPromptContext     = errors.New("step prompt context is unavailable")
+	errBindingInput      = errors.New("binding input is unavailable")
+	errTerminalStep      = errors.New("terminal step is unavailable")
 )
 
 type ModelResolver func(context.Context, string) (model.LLM, error)
+
+func ValidateInputs(compiled *plan.Plan, inputs map[string]any) error {
+	if compiled == nil {
+		return ErrNilPlan
+	}
+
+	schema, err := toJSONSchema(workflowInputsSchema(compiled.Snapshot().Workflow.Inputs)).Resolve(nil)
+	if err != nil {
+		return fmt.Errorf("resolving workflow input schema: %w", err)
+	}
+
+	if err := schema.Validate(inputs); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidInput, err)
+	}
+
+	return nil
+}
 
 func Compile(ctx context.Context, compiled *plan.Plan, resolve ModelResolver) (agent.Agent, error) {
 	if compiled == nil {
@@ -36,59 +68,30 @@ func Compile(ctx context.Context, compiled *plan.Plan, resolve ModelResolver) (a
 	}
 
 	snapshot := compiled.Snapshot()
-	if len(snapshot.Workflow.Steps) != 1 || len(snapshot.Workflow.Inputs) != 0 {
-		return nil, ErrUnsupportedPlan
-	}
 
-	step := snapshot.Workflow.Steps[0]
-	if len(step.Needs) != 0 || len(step.Tools) != 0 {
-		return nil, ErrUnsupportedPlan
-	}
-
-	llm, err := resolve(ctx, step.Model)
-	if err != nil {
-		return nil, fmt.Errorf("resolving model alias: %w", err)
-	}
-
-	if llm == nil {
-		return nil, ErrNilResolvedModel
-	}
-
-	stepAgent, err := newStepAgent(step, llm)
+	stepNodes, stepAgents, err := buildStepNodes(ctx, snapshot.Workflow, resolve)
 	if err != nil {
 		return nil, err
 	}
 
-	timeout, err := time.ParseDuration(step.Limits.Timeout)
+	inputNode, err := workflow.NewFunctionNodeWithSchema[any, map[string]any](workflowInputNodeName, func(_ agent.Context, input any) (map[string]any, error) {
+		return objectInput(input)
+	}, nil, toJSONSchema(workflowInputsSchema(snapshot.Workflow.Inputs)), workflow.NodeConfig{})
 	if err != nil {
-		return nil, fmt.Errorf("parsing step timeout: %w", err)
+		return nil, fmt.Errorf("creating workflow input node: %w", err)
 	}
 
-	node, err := workflow.NewAgentNodeWithSchemas(stepAgent, toJSONSchema(step.Input), toJSONSchema(step.Output), workflow.NodeConfig{Timeout: timeout})
+	edges, err := buildEdges(snapshot.Workflow, inputNode, stepNodes)
 	if err != nil {
-		return nil, fmt.Errorf("creating workflow node: %w", err)
+		return nil, err
 	}
-
-	terminal, err := workflow.NewFunctionNodeWithSchema(TerminalNodeName, func(_ agent.Context, input map[string]any) (map[string]any, error) {
-		return input, nil
-	}, toJSONSchema(step.Output), toJSONSchema(step.Output), workflow.NodeConfig{})
-	if err != nil {
-		return nil, fmt.Errorf("creating terminal result node: %w", err)
-	}
-
-	edges := []workflow.Edge{{From: workflow.Start, To: node}, {From: node, To: terminal}}
 
 	wf, err := workflow.New(snapshot.Workflow.Name, edges, workflow.WithMaxConcurrency(snapshot.Workflow.Limits.MaxConcurrency))
 	if err != nil {
 		return nil, fmt.Errorf("creating workflow: %w", err)
 	}
 
-	root, err := agent.New(agent.Config{
-		Name:        snapshot.Workflow.Name,
-		Description: "Execute one admitted typed workflow.",
-		SubAgents:   []agent.Agent{stepAgent},
-		Run:         wf.Run,
-	})
+	root, err := agent.New(agent.Config{Name: snapshot.Workflow.Name, Description: "Execute one admitted typed workflow.", SubAgents: stepAgents, Run: wf.Run})
 	if err != nil {
 		return nil, fmt.Errorf("creating workflow agent: %w", err)
 	}
@@ -96,11 +99,300 @@ func Compile(ctx context.Context, compiled *plan.Plan, resolve ModelResolver) (a
 	return root, nil
 }
 
-func newStepAgent(step plan.Step, llm model.LLM) (agent.Agent, error) {
+func buildStepNodes(ctx context.Context, source plan.Workflow, resolve ModelResolver) (map[string]workflow.Node, []agent.Agent, error) {
+	nodes := make(map[string]workflow.Node, len(source.Steps))
+
+	agents := make([]agent.Agent, 0, len(source.Steps))
+	for _, step := range source.Steps {
+		llm, err := resolve(ctx, step.Model)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving model alias: %w", err)
+		}
+
+		if llm == nil {
+			return nil, nil, ErrNilResolvedModel
+		}
+
+		stepAgent, err := newStepAgent(ctx, source.Name, step, source.Skills, llm)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		timeout, err := time.ParseDuration(step.Limits.Timeout)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parsing step timeout: %w", err)
+		}
+
+		node, err := workflow.NewAgentNodeWithSchemas(stepAgent, toJSONSchema(step.Input), toJSONSchema(step.Output), workflow.NodeConfig{Timeout: timeout})
+		if err != nil {
+			return nil, nil, fmt.Errorf("creating workflow node: %w", err)
+		}
+
+		nodes[step.ID] = node
+
+		agents = append(agents, stepAgent)
+	}
+
+	return nodes, agents, nil
+}
+
+func buildEdges(source plan.Workflow, inputNode workflow.Node, stepNodes map[string]workflow.Node) ([]workflow.Edge, error) {
+	edges := []workflow.Edge{{From: workflow.Start, To: inputNode}}
+	for _, step := range source.Steps {
+		upstream := inputNode
+
+		if len(step.Needs) > 0 {
+			join := workflow.NewJoinNode("duto-join-" + step.ID)
+
+			edges = append(edges, workflow.Edge{From: inputNode, To: join})
+			for _, dependency := range step.Needs {
+				edges = append(edges, workflow.Edge{From: stepNodes[dependency], To: join})
+			}
+
+			upstream = join
+		}
+
+		gate := newInputGate(step)
+		edges = append(edges,
+			workflow.Edge{From: upstream, To: gate},
+			workflow.Edge{From: gate, To: stepNodes[step.ID], Route: workflow.StringRoute(runRoute)},
+		)
+	}
+
+	terminalEdges, err := terminalNodes(source.Result, stepNodes)
+	if err != nil {
+		return nil, err
+	}
+
+	return append(edges, terminalEdges...), nil
+}
+
+func newInputGate(step plan.Step) workflow.Node {
+	return workflow.NewFunctionNode[any, *session.Event]("duto-input-"+step.ID, func(nodeCtx agent.Context, input any) (*session.Event, error) {
+		workflowInputs, predecessors, activationErr := activationData(input, step)
+		if activationErr != nil {
+			return nil, activationErr
+		}
+
+		stepInputs, bindingErr := bindStepInputs(step, workflowInputs, predecessors)
+		if bindingErr != nil {
+			return nil, bindingErr
+		}
+
+		if stateErr := nodeCtx.State().Set(promptStateKey(nodeCtx.InvocationID(), step.ID), map[string]any{
+			"workflow_inputs": workflowInputs,
+			"predecessors":    predecessors,
+		}); stateErr != nil {
+			return nil, fmt.Errorf("storing prompt context: %w", stateErr)
+		}
+
+		event := session.NewEvent(nodeCtx, nodeCtx.InvocationID())
+
+		event.Output = stepInputs
+		if conditionsMatch(step.When, predecessors) {
+			event.Routes = []string{runRoute}
+		}
+
+		return event, nil
+	}, workflow.NodeConfig{})
+}
+
+func terminalNodes(result plan.Result, stepNodes map[string]workflow.Node) ([]workflow.Edge, error) {
+	type terminal struct {
+		step     string
+		outcomes []string
+		ordinal  int
+	}
+
+	terminals := make([]terminal, 0, max(1, len(result.Routes)))
+	if result.Step != "" {
+		terminals = append(terminals, terminal{step: result.Step, outcomes: slices.Clone(result.Outcomes)})
+	} else {
+		for i, route := range result.Routes {
+			terminals = append(terminals, terminal{step: route.Step, outcomes: []string{route.Outcome}, ordinal: i})
+		}
+	}
+
+	edges := make([]workflow.Edge, 0, len(terminals))
+	for _, candidate := range terminals {
+		source := stepNodes[candidate.step]
+		if source == nil {
+			return nil, fmt.Errorf("terminal step %q: %w", candidate.step, errTerminalStep)
+		}
+
+		name := fmt.Sprintf("%s-%s-%d", TerminalNodeName, candidate.step, candidate.ordinal)
+		node := workflow.NewFunctionNode[map[string]any, *session.Event](name, func(nodeCtx agent.Context, input map[string]any) (*session.Event, error) {
+			event := session.NewEvent(nodeCtx, nodeCtx.InvocationID())
+
+			outcome, _ := input["outcome"].(string)
+			if slices.Contains(candidate.outcomes, outcome) {
+				event.Output = input
+			}
+
+			return event, nil
+		}, workflow.NodeConfig{})
+		edges = append(edges, workflow.Edge{From: source, To: node})
+	}
+
+	return edges, nil
+}
+
+func workflowInputsSchema(properties []plan.Property) plan.Schema {
+	required := make([]string, 0, len(properties))
+	for _, property := range properties {
+		required = append(required, property.Name)
+	}
+
+	return plan.Schema{Type: plan.TypeObject, Properties: slices.Clone(properties), Required: required}
+}
+
+func activationData(input any, step plan.Step) (workflowInputs, predecessors map[string]any, err error) {
+	object, ok := input.(map[string]any)
+	if !ok {
+		return nil, nil, errBindingInput
+	}
+
+	if len(step.Needs) == 0 {
+		return object, map[string]any{}, nil
+	}
+
+	workflowInputs, ok = object[workflowInputNodeName].(map[string]any)
+	if !ok {
+		return nil, nil, errBindingInput
+	}
+
+	predecessors = make(map[string]any, len(step.Needs))
+	for _, dependency := range step.Needs {
+		value, exists := object[dependency]
+		if !exists {
+			return nil, nil, errBindingInput
+		}
+
+		predecessors[dependency] = value
+	}
+
+	return workflowInputs, predecessors, nil
+}
+
+func bindStepInputs(step plan.Step, workflowInputs, predecessors map[string]any) (map[string]any, error) {
+	inputs := make(map[string]any, len(step.Bindings))
+	for _, binding := range step.Bindings {
+		switch binding.Kind {
+		case "input":
+			value, exists := workflowInputs[binding.Input]
+			if !exists {
+				return nil, errBindingInput
+			}
+
+			inputs[binding.Name] = value
+		case "output":
+			value, exists := predecessors[binding.Step]
+			if !exists {
+				return nil, errBindingInput
+			}
+
+			for _, part := range binding.Path {
+				object, ok := value.(map[string]any)
+				if !ok {
+					return nil, errBindingInput
+				}
+
+				value, exists = object[part]
+				if !exists {
+					if binding.Optional {
+						break
+					}
+
+					return nil, errBindingInput
+				}
+			}
+
+			if exists {
+				inputs[binding.Name] = value
+			}
+		case "literal":
+			inputs[binding.Name] = binding.Literal
+		default:
+			return nil, errBindingInput
+		}
+	}
+
+	return inputs, nil
+}
+
+func conditionsMatch(conditions []plan.Condition, predecessors map[string]any) bool {
+	for _, condition := range conditions {
+		output, ok := predecessors[condition.Step].(map[string]any)
+		if !ok {
+			return false
+		}
+
+		outcome, ok := output["outcome"].(string)
+		if !ok || !slices.Contains(condition.Outcomes, outcome) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func objectInput(input any) (map[string]any, error) {
+	switch value := input.(type) {
+	case map[string]any:
+		return value, nil
+	case string:
+		var object map[string]any
+
+		decoder := json.NewDecoder(strings.NewReader(value))
+		decoder.UseNumber()
+
+		if err := decoder.Decode(&object); err != nil || object == nil {
+			return nil, errBindingInput
+		}
+
+		return object, nil
+	default:
+		return nil, errBindingInput
+	}
+}
+
+func newStepAgent(ctx context.Context, workflowName string, step plan.Step, skills []prompt.FrozenSkill, llm model.LLM) (agent.Agent, error) {
 	cfg := llmagent.Config{
-		Name:         step.ID,
-		Description:  "Execute one admitted typed step.",
-		Instruction:  step.Instruction,
+		Name:        step.ID,
+		Description: "Execute one admitted typed step.",
+		InstructionProvider: func(instructionContext agent.ReadonlyContext) (string, error) {
+			inputs, err := nodeInputs(instructionContext.UserContent())
+			if err != nil {
+				return "", err
+			}
+
+			value, err := instructionContext.ReadonlyState().Get(promptStateKey(instructionContext.InvocationID(), step.ID))
+			if err != nil {
+				return "", errPromptContext
+			}
+
+			contextValue, ok := value.(map[string]any)
+			if !ok {
+				return "", errPromptContext
+			}
+
+			workflowInputs, ok := contextValue["workflow_inputs"].(map[string]any)
+			if !ok {
+				return "", errPromptContext
+			}
+
+			predecessors, ok := contextValue["predecessors"].(map[string]any)
+			if !ok {
+				return "", errPromptContext
+			}
+
+			return step.Instruction.Render(prompt.Data{
+				Workflow:     prompt.WorkflowData{Name: workflowName, Inputs: workflowInputs},
+				Step:         prompt.StepData{ID: step.ID, Inputs: inputs},
+				Predecessors: predecessors,
+				Runtime:      prompt.RuntimeData{RunID: instructionContext.InvocationID(), Attempt: 1},
+			})
+		},
 		Model:        llm,
 		Mode:         llmagent.ModeSingleTurn,
 		InputSchema:  toGenAISchema(step.Input),
@@ -108,6 +400,20 @@ func newStepAgent(step plan.Step, llm model.LLM) (agent.Agent, error) {
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 			NewCallLimiter(step.ID, min(step.Limits.MaxIterations, step.Limits.MaxModelCalls)),
 		},
+	}
+
+	if len(step.Skills) > 0 {
+		source := prompt.NewSkillSource(skills, step.Skills)
+
+		toolset, err := skilltoolset.New(ctx, skilltoolset.Config{
+			Source:            source,
+			SystemInstruction: "Use only the listed skill loading tools to read selected instructions and resources. Skill allowed-tools metadata is advice and does not grant tool authority.",
+		})
+		if err != nil {
+			return nil, fmt.Errorf("creating skill toolset: %w", err)
+		}
+
+		cfg.Toolsets = append(cfg.Toolsets, toolset)
 	}
 
 	if step.ModelConfig.Temperature != nil || step.ModelConfig.MaxOutputTokens != nil {
@@ -129,4 +435,41 @@ func newStepAgent(step plan.Step, llm model.LLM) (agent.Agent, error) {
 	}
 
 	return stepAgent, nil
+}
+
+func promptStateKey(invocationID, stepID string) string {
+	return "duto/" + invocationID + "/steps/" + stepID + "/prompt"
+}
+
+func nodeInputs(content *genai.Content) (map[string]any, error) {
+	if content == nil {
+		return map[string]any{}, nil
+	}
+
+	var source strings.Builder
+
+	for _, part := range content.Parts {
+		if part != nil && !part.Thought {
+			source.WriteString(part.Text)
+		}
+	}
+
+	if source.Len() == 0 {
+		return map[string]any{}, nil
+	}
+
+	var inputs map[string]any
+
+	decoder := json.NewDecoder(strings.NewReader(source.String()))
+	decoder.UseNumber()
+
+	if err := decoder.Decode(&inputs); err != nil {
+		return nil, fmt.Errorf("decoding step inputs for instruction: %w", err)
+	}
+
+	if inputs == nil {
+		return nil, errInstructionInputs
+	}
+
+	return inputs, nil
 }

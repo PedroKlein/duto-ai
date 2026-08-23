@@ -7,8 +7,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type Result struct {
+type ResultWhen struct {
+	Step    string
+	Outcome string
+}
+
+type ResultRoute struct {
+	When ResultWhen
 	Step string
+}
+
+type Result struct {
+	Step   string
+	Routes []ResultRoute
 }
 
 type Workflow struct {
@@ -19,6 +30,7 @@ type Workflow struct {
 	Model       string
 	ModelConfig ModelConfig
 	Tools       []string
+	Skills      map[string]SkillSource
 	Limits      Limits
 	Steps       []Step
 	Result      Result
@@ -39,7 +51,7 @@ func DecodeWorkflow(name string, data []byte) (*Workflow, error) {
 		return nil, err
 	}
 
-	fields, err := mappingFields(name, root, "$", "version", "name", "description", "inputs", "model", "model_config", "tools", "limits", "steps", "result")
+	fields, err := mappingFields(name, root, "$", "version", "name", "description", "inputs", "model", "model_config", "tools", "skills", "limits", "steps", "result")
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +90,7 @@ func DecodeWorkflow(name string, data []byte) (*Workflow, error) {
 		return nil, err
 	}
 
-	tools, err := decodeStringList(name, fields["tools"], "$.tools")
+	tools, skills, err := decodeWorkflowCapabilities(name, fields)
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +118,7 @@ func DecodeWorkflow(name string, data []byte) (*Workflow, error) {
 		Model:       model,
 		ModelConfig: modelConfig,
 		Tools:       tools,
+		Skills:      skills,
 		Limits:      limits,
 		Steps:       steps,
 		Result:      result,
@@ -115,6 +128,20 @@ func DecodeWorkflow(name string, data []byte) (*Workflow, error) {
 	}
 
 	return workflow, nil
+}
+
+func decodeWorkflowCapabilities(name string, fields map[string]*yaml.Node) (tools []string, skills map[string]SkillSource, err error) {
+	tools, err = decodeStringList(name, fields["tools"], "$.tools")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	skills, err = decodeSkills(name, fields["skills"])
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return tools, skills, nil
 }
 
 func decodeInputs(name string, node *yaml.Node) (map[string]Input, error) {
@@ -261,8 +288,8 @@ func decodeSteps(name string, node *yaml.Node) ([]Step, error) {
 	return steps, nil
 }
 
-func decodeStep(name string, node *yaml.Node, path string) (Step, error) {
-	fields, err := mappingFields(name, node, path, "id", "needs", "instruction", "model", "model_config", "tools", "workspaces", "input", "with", "output", "limits")
+func decodeStep(name string, node *yaml.Node, path string) (Step, error) { //nolint:gocyclo // A step is one closed source record decoded in contract order.
+	fields, err := mappingFields(name, node, path, "id", "needs", "wait", "when", "instruction", "model", "model_config", "tools", "skills", "workspaces", "input", "with", "output", "limits")
 	if err != nil {
 		return Step{}, err
 	}
@@ -273,6 +300,20 @@ func decodeStep(name string, node *yaml.Node, path string) (Step, error) {
 	}
 
 	needs, err := decodeStringList(name, fields["needs"], path+".needs")
+	if err != nil {
+		return Step{}, err
+	}
+
+	wait, err := optionalString(name, fields["wait"], path+".wait")
+	if err != nil {
+		return Step{}, err
+	}
+
+	if wait != "" && wait != "all_succeeded" {
+		return Step{}, diagnostic(name, path+".wait", fields["wait"], CodeInvalidValue)
+	}
+
+	when, err := decodeConditions(name, fields["when"], path+".when")
 	if err != nil {
 		return Step{}, err
 	}
@@ -297,6 +338,11 @@ func decodeStep(name string, node *yaml.Node, path string) (Step, error) {
 		return Step{}, err
 	}
 
+	skills, err := decodeStringList(name, fields["skills"], path+".skills")
+	if err != nil {
+		return Step{}, err
+	}
+
 	workspaces, err := decodeWorkspaces(name, fields["workspaces"], path+".workspaces")
 	if err != nil {
 		return Step{}, err
@@ -312,6 +358,8 @@ func decodeStep(name string, node *yaml.Node, path string) (Step, error) {
 		return Step{}, err
 	}
 
+	bindingOrder := mappingKeyOrder(fields["with"])
+
 	output, err := decodeRequiredSchema(name, fields["output"], path+".output")
 	if err != nil {
 		return Step{}, err
@@ -322,7 +370,7 @@ func decodeStep(name string, node *yaml.Node, path string) (Step, error) {
 		return Step{}, err
 	}
 
-	return Step{ID: id, Needs: needs, Instruction: instruction, Model: model, ModelConfig: modelConfig, Tools: tools, Workspaces: workspaces, Input: input, With: bindings, Output: output, Limits: limits}, nil
+	return Step{ID: id, Needs: needs, Wait: wait, When: when, Instruction: instruction, Model: model, ModelConfig: modelConfig, Tools: tools, Skills: skills, Workspaces: workspaces, Input: input, With: bindings, WithOrder: bindingOrder, Output: output, Limits: limits}, nil
 }
 
 func decodeInstruction(name string, node *yaml.Node, path string) (Instruction, error) {
@@ -335,17 +383,130 @@ func decodeInstruction(name string, node *yaml.Node, path string) (Instruction, 
 		return Instruction{Kind: InstructionText, Text: text}, err
 	}
 
-	fields, err := mappingFields(name, node, path, "text")
+	fields, err := mappingFields(name, node, path, "text", "file", "template")
 	if err != nil {
 		return Instruction{}, err
 	}
 
-	text, err := requiredString(name, fields, "text", path+".text")
+	present := 0
+
+	for _, field := range []string{"text", "file", "template"} {
+		if fields[field] != nil {
+			present++
+		}
+	}
+
+	if present != 1 {
+		return Instruction{}, diagnostic(name, path, node, CodeInvalidValue)
+	}
+
+	if fields["text"] != nil {
+		text, err := scalarString(name, fields["text"], path+".text")
+		return Instruction{Kind: InstructionText, Text: text}, err
+	}
+
+	if fields["file"] != nil {
+		file, err := decodeFileSource(name, fields["file"], path+".file")
+		return Instruction{Kind: InstructionFile, File: file}, err
+	}
+
+	return decodeTemplateInstruction(name, fields["template"], path+".template")
+}
+
+func decodeTemplateInstruction(name string, node *yaml.Node, path string) (Instruction, error) {
+	fields, err := mappingFields(name, node, path, "text", "file", "max_output_bytes")
 	if err != nil {
 		return Instruction{}, err
 	}
 
-	return Instruction{Kind: InstructionText, Text: text}, nil
+	if (fields["text"] == nil) == (fields["file"] == nil) {
+		return Instruction{}, diagnostic(name, path, node, CodeInvalidValue)
+	}
+
+	maxOutputBytes, err := requiredInt(name, fields, "max_output_bytes", path+".max_output_bytes")
+	if err != nil || maxOutputBytes <= 0 {
+		if err != nil {
+			return Instruction{}, err
+		}
+
+		return Instruction{}, diagnostic(name, path+".max_output_bytes", fields["max_output_bytes"], CodeInvalidValue)
+	}
+
+	if fields["text"] != nil {
+		text, textErr := scalarString(name, fields["text"], path+".text")
+		return Instruction{Kind: InstructionTemplate, Text: text, MaxOutputBytes: maxOutputBytes}, textErr
+	}
+
+	file, err := decodeFileSource(name, fields["file"], path+".file")
+
+	return Instruction{Kind: InstructionTemplateFile, File: file, MaxOutputBytes: maxOutputBytes}, err
+}
+
+func decodeFileSource(name string, node *yaml.Node, path string) (FileSource, error) {
+	fields, err := mappingFields(name, node, path, "workspace", "path", "max_bytes")
+	if err != nil {
+		return FileSource{}, err
+	}
+
+	workspace, err := requiredString(name, fields, "workspace", path+".workspace")
+	if err != nil {
+		return FileSource{}, err
+	}
+
+	filePath, err := requiredString(name, fields, "path", path+".path")
+	if err != nil {
+		return FileSource{}, err
+	}
+
+	maxBytes, err := requiredInt(name, fields, "max_bytes", path+".max_bytes")
+	if err != nil {
+		return FileSource{}, err
+	}
+
+	if workspace == "" || filePath == "" || maxBytes <= 0 {
+		return FileSource{}, diagnostic(name, path, node, CodeInvalidValue)
+	}
+
+	return FileSource{Workspace: workspace, Path: filePath, MaxBytes: maxBytes}, nil
+}
+
+func decodeSkills(name string, node *yaml.Node) (map[string]SkillSource, error) {
+	if node == nil {
+		return map[string]SkillSource{}, nil
+	}
+
+	if node.Kind != yaml.MappingNode {
+		return nil, diagnostic(name, "$.skills", node, CodeInvalidType)
+	}
+
+	skilled := make(map[string]SkillSource, len(node.Content)/2)
+	for i := 0; i < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+
+		path := "$.skills." + key.Value
+		if !namePattern.MatchString(key.Value) {
+			return nil, diagnostic(name, path, key, CodeInvalidValue)
+		}
+
+		fields, err := mappingFields(name, value, path, "workspace", "path")
+		if err != nil {
+			return nil, err
+		}
+
+		workspace, err := requiredString(name, fields, "workspace", path+".workspace")
+		if err != nil {
+			return nil, err
+		}
+
+		skillPath, err := requiredString(name, fields, "path", path+".path")
+		if err != nil {
+			return nil, err
+		}
+
+		skilled[key.Value] = SkillSource{Workspace: workspace, Path: skillPath}
+	}
+
+	return skilled, nil
 }
 
 func decodeRequiredSchema(name string, node *yaml.Node, path string) (Schema, error) {
@@ -497,6 +658,57 @@ func decodeWorkspaces(name string, node *yaml.Node, path string) ([]WorkspaceRef
 	return workspaces, nil
 }
 
+func mappingKeyOrder(node *yaml.Node) []string {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return []string{}
+	}
+
+	order := make([]string, 0, len(node.Content)/2)
+	for i := 0; i < len(node.Content); i += 2 {
+		order = append(order, node.Content[i].Value)
+	}
+
+	return order
+}
+
+func decodeConditions(name string, node *yaml.Node, path string) ([]Condition, error) {
+	if node == nil {
+		return []Condition{}, nil
+	}
+
+	if node.Kind != yaml.SequenceNode {
+		return nil, diagnostic(name, path, node, CodeInvalidType)
+	}
+
+	conditions := make([]Condition, 0, len(node.Content))
+	for i, item := range node.Content {
+		itemPath := fmt.Sprintf("%s[%d]", path, i)
+
+		fields, err := mappingFields(name, item, itemPath, "step", "outcome_in")
+		if err != nil {
+			return nil, err
+		}
+
+		step, err := requiredString(name, fields, "step", itemPath+".step")
+		if err != nil {
+			return nil, err
+		}
+
+		outcomes, err := decodeStringList(name, fields["outcome_in"], itemPath+".outcome_in")
+		if err != nil {
+			return nil, err
+		}
+
+		if len(outcomes) == 0 {
+			return nil, diagnostic(name, itemPath+".outcome_in", fields["outcome_in"], CodeInvalidValue)
+		}
+
+		conditions = append(conditions, Condition{Step: step, Outcomes: outcomes})
+	}
+
+	return conditions, nil
+}
+
 func decodeBindings(name string, node *yaml.Node, path string) (map[string]Binding, error) {
 	if node == nil {
 		return nil, diagnostic(name, path, nil, CodeMissingField)
@@ -515,46 +727,153 @@ func decodeBindings(name string, node *yaml.Node, path string) (map[string]Bindi
 			return nil, diagnostic(name, itemPath, key, CodeInvalidValue)
 		}
 
-		fields, err := mappingFields(name, value, itemPath, "input", "literal")
+		binding, err := decodeBinding(name, value, itemPath)
 		if err != nil {
 			return nil, err
 		}
 
-		switch {
-		case fields["input"] != nil && fields["literal"] == nil:
-			input, err := scalarString(name, fields["input"], itemPath+".input")
-			if err != nil {
-				return nil, err
-			}
-
-			bindings[key.Value] = Binding{Kind: BindingInput, Input: input}
-		case fields["literal"] != nil && fields["input"] == nil:
-			literal, err := scalarString(name, fields["literal"], itemPath+".literal")
-			if err != nil {
-				return nil, err
-			}
-
-			bindings[key.Value] = Binding{Kind: BindingLiteral, Literal: literal}
-		default:
-			return nil, diagnostic(name, itemPath, value, CodeInvalidValue)
-		}
+		bindings[key.Value] = binding
 	}
 
 	return bindings, nil
 }
 
+func decodeBinding(name string, node *yaml.Node, path string) (Binding, error) {
+	fields, err := mappingFields(name, node, path, "input", "output", "literal", "optional")
+	if err != nil {
+		return Binding{}, err
+	}
+
+	optional := fields["optional"] != nil && fields["optional"].Value == "true"
+	if fields["optional"] != nil && (fields["optional"].Kind != yaml.ScalarNode || fields["optional"].Tag != yamlBoolTag) {
+		return Binding{}, diagnostic(name, path+".optional", fields["optional"], CodeInvalidType)
+	}
+
+	present := 0
+
+	for _, field := range []string{"input", "output", "literal"} {
+		if fields[field] != nil {
+			present++
+		}
+	}
+
+	if present != 1 {
+		return Binding{}, diagnostic(name, path, node, CodeInvalidValue)
+	}
+
+	if fields["output"] != nil {
+		output, outputErr := decodeOutputRef(name, fields["output"], path+".output")
+		return Binding{Kind: BindingOutput, Output: output, Optional: optional}, outputErr
+	}
+
+	if optional {
+		return Binding{}, diagnostic(name, path+".optional", fields["optional"], CodeInvalidValue)
+	}
+
+	if fields["input"] != nil {
+		input, inputErr := scalarString(name, fields["input"], path+".input")
+		return Binding{Kind: BindingInput, Input: input}, inputErr
+	}
+
+	literal, err := decodeLiteral(name, fields["literal"], path+".literal")
+
+	return Binding{Kind: BindingLiteral, Literal: literal}, err
+}
+
+func decodeOutputRef(name string, node *yaml.Node, path string) (OutputRef, error) {
+	fields, err := mappingFields(name, node, path, "step", "path")
+	if err != nil {
+		return OutputRef{}, err
+	}
+
+	step, err := requiredString(name, fields, "step", path+".step")
+	if err != nil {
+		return OutputRef{}, err
+	}
+
+	parts, err := decodeStringList(name, fields["path"], path+".path")
+	if err != nil {
+		return OutputRef{}, err
+	}
+
+	if len(parts) == 0 {
+		return OutputRef{}, diagnostic(name, path+".path", fields["path"], CodeInvalidValue)
+	}
+
+	return OutputRef{Step: step, Path: parts}, nil
+}
+
+func decodeLiteral(name string, node *yaml.Node, path string) (any, error) {
+	if node.Kind != yaml.ScalarNode {
+		return nil, diagnostic(name, path, node, CodeInvalidType)
+	}
+
+	switch node.Tag {
+	case yamlStringTag:
+		return node.Value, nil
+	case yamlBoolTag:
+		return node.Value == "true", nil
+	case yamlIntTag:
+		return scalarInt(name, node, path)
+	case yamlFloatTag:
+		return scalarFloat(name, node, path)
+	default:
+		return nil, diagnostic(name, path, node, CodeInvalidType)
+	}
+}
+
 func decodeResult(name string, node *yaml.Node) (Result, error) {
-	fields, err := mappingFields(name, node, "$.result", "step")
+	fields, err := mappingFields(name, node, "$.result", "step", "routes")
 	if err != nil {
 		return Result{}, err
 	}
 
-	step, err := requiredString(name, fields, "step", "$.result.step")
-	if err != nil {
-		return Result{}, err
+	if (fields["step"] == nil) == (fields["routes"] == nil) {
+		return Result{}, diagnostic(name, "$.result", node, CodeInvalidValue)
 	}
 
-	return Result{Step: step}, nil
+	if fields["step"] != nil {
+		step, err := scalarString(name, fields["step"], "$.result.step")
+		return Result{Step: step}, err
+	}
+
+	if fields["routes"].Kind != yaml.SequenceNode || len(fields["routes"].Content) == 0 {
+		return Result{}, diagnostic(name, "$.result.routes", fields["routes"], CodeInvalidType)
+	}
+
+	routes := make([]ResultRoute, 0, len(fields["routes"].Content))
+	for i, routeNode := range fields["routes"].Content {
+		path := fmt.Sprintf("$.result.routes[%d]", i)
+
+		routeFields, err := mappingFields(name, routeNode, path, "when", "step")
+		if err != nil {
+			return Result{}, err
+		}
+
+		step, err := requiredString(name, routeFields, "step", path+".step")
+		if err != nil {
+			return Result{}, err
+		}
+
+		whenFields, err := mappingFields(name, routeFields["when"], path+".when", "step", "outcome")
+		if err != nil {
+			return Result{}, err
+		}
+
+		whenStep, err := requiredString(name, whenFields, "step", path+".when.step")
+		if err != nil {
+			return Result{}, err
+		}
+
+		outcome, err := requiredString(name, whenFields, "outcome", path+".when.outcome")
+		if err != nil {
+			return Result{}, err
+		}
+
+		routes = append(routes, ResultRoute{When: ResultWhen{Step: whenStep, Outcome: outcome}, Step: step})
+	}
+
+	return Result{Routes: routes}, nil
 }
 
 func decodeStringList(name string, node *yaml.Node, path string) ([]string, error) {

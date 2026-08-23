@@ -16,6 +16,9 @@ import (
 const (
 	Version       = 1
 	yamlStringTag = "!!str"
+	yamlIntTag    = "!!int"
+	yamlFloatTag  = "!!float"
+	yamlBoolTag   = "!!bool"
 )
 
 const (
@@ -61,11 +64,17 @@ type Evidence struct {
 	Directory string
 }
 
+type Workspace struct {
+	Root   string
+	Access string
+}
+
 type Config struct {
-	Version   int
-	Providers map[string]Provider
-	Models    map[string]Model
-	Evidence  Evidence
+	Version    int
+	Providers  map[string]Provider
+	Models     map[string]Model
+	Workspaces map[string]Workspace
+	Evidence   Evidence
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -83,7 +92,7 @@ func DecodeConfig(name string, data []byte) (*Config, error) {
 		return nil, err
 	}
 
-	fields, err := mappingFields(name, root, "$", "version", "providers", "models", "evidence")
+	fields, err := mappingFields(name, root, "$", "version", "providers", "models", "workspaces", "evidence")
 	if err != nil {
 		return nil, err
 	}
@@ -107,6 +116,11 @@ func DecodeConfig(name string, data []byte) (*Config, error) {
 		return nil, err
 	}
 
+	workspaces, err := decodeTrustedWorkspaces(name, fields["workspaces"])
+	if err != nil {
+		return nil, err
+	}
+
 	evidence, err := decodeEvidence(name, fields["evidence"])
 	if err != nil {
 		return nil, err
@@ -118,9 +132,57 @@ func DecodeConfig(name string, data []byte) (*Config, error) {
 
 	expandProviderConfig(providers)
 
+	for workspaceName, workspace := range workspaces {
+		workspace.Root = os.Expand(workspace.Root, os.Getenv)
+		workspaces[workspaceName] = workspace
+	}
+
 	evidence.Directory = os.Expand(evidence.Directory, os.Getenv)
 
-	return &Config{Version: version, Providers: providers, Models: models, Evidence: evidence}, nil
+	return &Config{Version: version, Providers: providers, Models: models, Workspaces: workspaces, Evidence: evidence}, nil
+}
+
+func decodeTrustedWorkspaces(name string, node *yaml.Node) (map[string]Workspace, error) {
+	if node == nil {
+		return map[string]Workspace{}, nil
+	}
+
+	if node.Kind != yaml.MappingNode {
+		return nil, diagnostic(name, "$.workspaces", node, CodeInvalidType)
+	}
+
+	workspaces := make(map[string]Workspace, len(node.Content)/2)
+	for i := 0; i < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+
+		path := "$.workspaces." + key.Value
+		if !namePattern.MatchString(key.Value) {
+			return nil, diagnostic(name, path, key, CodeInvalidValue)
+		}
+
+		fields, err := mappingFields(name, value, path, "root", "access")
+		if err != nil {
+			return nil, err
+		}
+
+		root, err := requiredString(name, fields, "root", path+".root")
+		if err != nil {
+			return nil, err
+		}
+
+		access, err := requiredString(name, fields, "access", path+".access")
+		if err != nil {
+			return nil, err
+		}
+
+		if access != "read" {
+			return nil, diagnostic(name, path+".access", fields["access"], CodeInvalidValue)
+		}
+
+		workspaces[key.Value] = Workspace{Root: root, Access: access}
+	}
+
+	return workspaces, nil
 }
 
 func decodeEvidence(name string, node *yaml.Node) (Evidence, error) {
@@ -365,7 +427,7 @@ func supportedTag(node *yaml.Node) bool {
 	case yaml.SequenceNode:
 		return node.Tag == "!!seq"
 	case yaml.ScalarNode:
-		return node.Tag == yamlStringTag || node.Tag == "!!int" || node.Tag == "!!float" || node.Tag == "!!bool"
+		return node.Tag == yamlStringTag || node.Tag == yamlIntTag || node.Tag == yamlFloatTag || node.Tag == yamlBoolTag
 	default:
 		return false
 	}
@@ -429,8 +491,8 @@ func scalarInt(name string, node *yaml.Node, path string) (int, error) {
 		return 0, diagnostic(name, path, node, CodeInvalidType)
 	}
 
-	if node.Tag != "!!int" {
-		if node.Tag == "!!float" && isDecimalInteger(node.Value) {
+	if node.Tag != yamlIntTag {
+		if node.Tag == yamlFloatTag && isDecimalInteger(node.Value) {
 			return 0, diagnostic(name, path, node, CodeInvalidValue)
 		}
 
@@ -461,7 +523,7 @@ func isDecimalInteger(value string) bool {
 }
 
 func scalarFloat(name string, node *yaml.Node, path string) (float64, error) {
-	if node.Kind != yaml.ScalarNode || (node.Tag != "!!float" && node.Tag != "!!int") {
+	if node.Kind != yaml.ScalarNode || (node.Tag != yamlFloatTag && node.Tag != yamlIntTag) {
 		return 0, diagnostic(name, path, node, CodeInvalidType)
 	}
 

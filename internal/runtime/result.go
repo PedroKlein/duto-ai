@@ -16,6 +16,7 @@ const (
 	StatusFailed     Status = "failed"
 	StatusCancelled  Status = "cancelled" //nolint:misspell // serialized contract spelling
 	StatusIncomplete Status = "incomplete"
+	StatusSkipped    Status = "skipped"
 )
 
 type Usage struct {

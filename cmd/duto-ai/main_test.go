@@ -164,6 +164,22 @@ func TestCLIRunUsesAdmittedPlan(t *testing.T) {
 	}
 }
 
+func TestRunAdmittedWorkflow_RejectsRequiredInputsBeforeProviderConstruction(t *testing.T) {
+	cfg, workflow := decodeInputs(t)
+
+	compiled, err := plan.Compile(cfg, workflow)
+	if err != nil {
+		t.Fatalf("plan.Compile() error = %v", err)
+	}
+
+	_, err = runAdmittedWorkflow(t.Context(), cfg, compiled, formatJSON)
+
+	var commandErr *commandError
+	if !errors.As(err, &commandErr) || commandErr.code != exitExecution || !errors.Is(err, errWorkflowInputs) {
+		t.Fatalf("runAdmittedWorkflow() error = %v", err)
+	}
+}
+
 func TestCLIRunFakeModelJSON(t *testing.T) {
 	configPath, workflowPath := writeNoInputInputs(t)
 	llm := mockllm.New(mockllm.Response{Text: `{"outcome":"completed","report":"cli"}`})
