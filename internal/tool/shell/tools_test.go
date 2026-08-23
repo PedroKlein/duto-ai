@@ -1,117 +1,172 @@
 package shell_test
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"google.golang.org/genai"
 
 	dtool "github.com/PedroKlein/duto-ai/internal/tool"
 	"github.com/PedroKlein/duto-ai/internal/tool/shell"
 )
 
-func TestRegisterAll(t *testing.T) {
-	root := t.TempDir()
-	reg := dtool.NewRegistry()
+func TestRegisterAll_RequiresExplicitTrustedPolicy(t *testing.T) {
+	registry := dtool.NewRegistry()
 
-	if err := shell.RegisterAll(reg, root); err != nil {
-		t.Fatalf("RegisterAll: %v", err)
+	err := shell.RegisterAll(registry, shell.Policy{})
+	if !errors.Is(err, shell.ErrInvalidPolicy) {
+		t.Fatalf("RegisterAll() error = %v, want ErrInvalidPolicy", err)
 	}
 
-	names := reg.Names()
-	if len(names) != 1 || names[0] != "shell.run" {
-		t.Errorf("registered = %v, want [shell.run]", names)
-	}
-}
-
-func TestRun_SimpleCommand(t *testing.T) {
-	root := t.TempDir()
-
-	result, err := shell.Run(root, shell.RunArgs{Command: "echo hello"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if result.ExitCode != 0 {
-		t.Errorf("exit code = %d, want 0", result.ExitCode)
-	}
-
-	if strings.TrimSpace(result.Stdout) != "hello" {
-		t.Errorf("stdout = %q, want %q", result.Stdout, "hello\n")
+	if names := registry.Names(); len(names) != 0 {
+		t.Fatalf("registered tools = %v, want none", names)
 	}
 }
 
-func TestRun_CwdIsLocked(t *testing.T) {
-	root := t.TempDir()
+func TestRegisterAll_HidesCommandAndTimeoutFromModel(t *testing.T) {
+	policy := testPolicy(t, "printf '%s' trusted")
+	registry := dtool.NewRegistry()
 
-	result, err := shell.Run(root, shell.RunArgs{Command: "pwd"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err := shell.RegisterAll(registry, policy); err != nil {
+		t.Fatalf("RegisterAll() error = %v", err)
 	}
 
-	if strings.TrimSpace(result.Stdout) != root {
-		t.Errorf("cwd = %q, want %q", strings.TrimSpace(result.Stdout), root)
-	}
-}
-
-func TestRun_NonZeroExit(t *testing.T) {
-	root := t.TempDir()
-
-	result, err := shell.Run(root, shell.RunArgs{Command: "exit 42"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	current, ok := registry.Get("shell.run")
+	if !ok {
+		t.Fatal("shell.run was not registered")
 	}
 
-	if result.ExitCode != 42 {
-		t.Errorf("exit code = %d, want 42", result.ExitCode)
-	}
-}
-
-func TestRun_Stderr(t *testing.T) {
-	root := t.TempDir()
-
-	result, err := shell.Run(root, shell.RunArgs{Command: "echo error >&2"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if strings.TrimSpace(result.Stderr) != "error" {
-		t.Errorf("stderr = %q, want %q", result.Stderr, "error\n")
-	}
-}
-
-func TestRun_Timeout(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("sleep command differs on windows")
-	}
-
-	root := t.TempDir()
-
-	result, err := shell.Run(root, shell.RunArgs{
-		Command: "sleep 10",
-		Timeout: 1,
+	declarer, ok := current.(interface {
+		Declaration() *genai.FunctionDeclaration
 	})
+	if !ok {
+		t.Fatal("shell.run has no declaration")
+	}
+
+	encoded, err := json.Marshal(declarer.Declaration().ParametersJsonSchema)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("encoding declaration: %v", err)
 	}
 
-	if result.ExitCode != -1 {
-		t.Errorf("exit code = %d, want -1 for timeout", result.ExitCode)
-	}
-
-	if !strings.Contains(result.Stderr, "timed out") {
-		t.Errorf("stderr should mention timeout, got: %q", result.Stderr)
+	for _, forbidden := range []string{"command", "timeout", "executable", "argv"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("model-visible schema contains %q: %s", forbidden, encoded)
+		}
 	}
 }
 
-func TestRun_EmptyCommand(t *testing.T) {
-	root := t.TempDir()
+func TestRun_UsesOnlyTrustedCommandWorkspaceAndEnvironment(t *testing.T) {
+	t.Setenv("BLOCKED", "host-secret")
 
-	result, err := shell.Run(root, shell.RunArgs{Command: ""})
+	policy := testPolicy(t, `printf '%s\n%s\n%s\n%s' "$PWD" "$ALLOWED" "${BLOCKED-unset}" "$1"`, "fixed-arg")
+	policy.Environment = map[string]string{"ALLOWED": "trusted-value"}
+
+	result, err := shell.Run(t.Context(), policy)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Run() error = %v", err)
 	}
 
-	if result.ExitCode != 1 {
-		t.Errorf("exit code = %d, want 1 for empty command", result.ExitCode)
+	wantWorkspace, err := filepath.EvalSymlinks(policy.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := strings.Join([]string{wantWorkspace, "trusted-value", "unset", "fixed-arg"}, "\n")
+	if strings.TrimSpace(result.Stdout) != want {
+		t.Fatalf("stdout = %q, want %q", result.Stdout, want)
+	}
+
+	if result.ExitCode != 0 || result.StdoutTruncated || result.StderrTruncated {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestRun_BoundsStdoutStderrAndResult(t *testing.T) {
+	policy := testPolicy(t, `printf 'abcdefghijklmnop'; printf 'qrstuvwxyz' >&2`)
+	policy.MaxStdoutBytes = 7
+	policy.MaxStderrBytes = 5
+	policy.Limit.MaxResultBytes = 160
+
+	result, err := shell.Run(t.Context(), policy)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if result.Stdout != "abcdefg" || result.Stderr != "qrstu" {
+		t.Fatalf("bounded output = %#v", result)
+	}
+
+	if !result.StdoutTruncated || !result.StderrTruncated {
+		t.Fatalf("truncation flags = %#v", result)
+	}
+
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("encoding result: %v", err)
+	}
+
+	if len(encoded) > policy.Limit.MaxResultBytes {
+		t.Fatalf("encoded result bytes = %d, limit = %d", len(encoded), policy.Limit.MaxResultBytes)
+	}
+}
+
+func TestRun_CancelledContextStartsNoProcess(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "started")
+	policy := testPolicy(t, `printf started > "$1"`, marker)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := shell.Run(ctx, policy)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context.Canceled", err)
+	}
+
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("process start marker error = %v, want not exist", statErr)
+	}
+}
+
+func TestRun_NonZeroExitIsTypedResult(t *testing.T) {
+	policy := testPolicy(t, `printf problem >&2; exit 42`)
+
+	result, err := shell.Run(t.Context(), policy)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if result.ExitCode != 42 || result.Stderr != "problem" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func testPolicy(t *testing.T, command string, args ...string) shell.Policy {
+	t.Helper()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("trusted shell fixture requires /bin/sh")
+	}
+
+	return shell.Policy{
+		Executable: "/bin/sh",
+		Args:       append([]string{"-c", command, "shell.run"}, args...),
+		Workspace:  t.TempDir(),
+		Environment: map[string]string{
+			"LC_ALL": "C",
+		},
+		MaxStdoutBytes: 1024,
+		MaxStderrBytes: 1024,
+		Limit: dtool.ToolLimit{
+			MaxCalls:        2,
+			Timeout:         2 * time.Second,
+			MaxRequestBytes: 64,
+			MaxResultBytes:  4096,
+		},
 	}
 }
