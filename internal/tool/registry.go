@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"errors"
 	"maps"
 	"sort"
 	"sync"
@@ -8,7 +9,9 @@ import (
 	adktool "google.golang.org/adk/v2/tool"
 )
 
-// Registry is a catalog of all available tools.
+var ErrToolUnavailable = errors.New("tool is unavailable")
+
+// Registry contains constructed run-scoped tools.
 type Registry struct {
 	mu    sync.RWMutex
 	tools map[string]adktool.Tool
@@ -63,4 +66,24 @@ func (r *Registry) Names() []string {
 	sort.Strings(names)
 
 	return names
+}
+
+func (r *Registry) FilteredToolset(names []string) (adktool.Toolset, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	tools := make([]adktool.Tool, 0, len(r.tools))
+	for _, registered := range r.tools {
+		tools = append(tools, registered)
+	}
+
+	for _, name := range names {
+		if _, exists := r.tools[name]; !exists {
+			return nil, ErrToolUnavailable
+		}
+	}
+
+	sort.Slice(tools, func(i, j int) bool { return tools[i].Name() < tools[j].Name() })
+
+	return adktool.FilterToolset(NewToolset(tools), adktool.AllowedToolsPredicate(names)), nil
 }

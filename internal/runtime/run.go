@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/artifact"
+	"google.golang.org/adk/v2/platform"
 	"google.golang.org/adk/v2/plugin"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
@@ -32,6 +34,10 @@ func Run(ctx context.Context, compiled *plan.Plan, resolve compiler.ModelResolve
 }
 
 func RunWithInputs(ctx context.Context, compiled *plan.Plan, resolve compiler.ModelResolver, inputs map[string]any) (*Result, error) {
+	return RunWithInputsAndToolsets(ctx, compiled, resolve, nil, inputs)
+}
+
+func RunWithInputsAndToolsets(ctx context.Context, compiled *plan.Plan, resolve compiler.ModelResolver, resolveToolset compiler.ToolsetResolver, inputs map[string]any) (*Result, error) {
 	started := time.Now().UTC()
 
 	runID, err := newRunID()
@@ -49,7 +55,7 @@ func RunWithInputs(ctx context.Context, compiled *plan.Plan, resolve compiler.Mo
 		return result, ErrExecution
 	}
 
-	root, err := compiler.Compile(ctx, compiled, resolve)
+	root, err := compiler.CompileWithToolsets(ctx, compiled, resolve, resolveToolset)
 	if err != nil {
 		result.Status = StatusFailed
 		result.FinishedAt = time.Now().UTC()
@@ -88,6 +94,7 @@ func RunWithInputs(ctx context.Context, compiled *plan.Plan, resolve compiler.Mo
 		return result, ErrExecution
 	}
 
+	ctx = platform.WithTaskRunner(ctx, boundedTaskRunner(compiled.Snapshot().Workflow.Limits.MaxParallelCalls))
 	runErr := consumeEvents(ctx, r, runID, string(encodedInputs), result)
 	finishResult(result, ctx.Err(), runErr)
 
@@ -265,6 +272,28 @@ func cloneObject(value any) (map[string]any, error) {
 	}
 
 	return output, nil
+}
+
+func boundedTaskRunner(limit int) platform.TaskRunner {
+	return func(ctx context.Context, tasks []func(context.Context)) {
+		jobs := make(chan func(context.Context), len(tasks))
+		for _, task := range tasks {
+			jobs <- task
+		}
+
+		close(jobs)
+
+		var workers sync.WaitGroup
+		for range min(limit, len(tasks)) {
+			workers.Go(func() {
+				for task := range jobs {
+					task(ctx)
+				}
+			})
+		}
+
+		workers.Wait()
+	}
 }
 
 func newRunID() (string, error) {

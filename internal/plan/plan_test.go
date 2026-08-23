@@ -109,7 +109,7 @@ func TestCompile_MinimalNoTools(t *testing.T) {
 		t.Fatalf("projection identity = %#v", jsonProjection)
 	}
 
-	if len(jsonProjection.Workflow.Steps) != 1 || len(jsonProjection.Workflow.Steps[0].Tools) != 0 {
+	if len(jsonProjection.Workflow.Steps) != 1 || len(jsonProjection.Workflow.Steps[0].Tools.Names) != 0 {
 		t.Fatalf("projection steps/tools = %#v", jsonProjection.Workflow.Steps)
 	}
 
@@ -174,7 +174,7 @@ func TestCompile_IsImmutable(t *testing.T) {
 func TestCompile_UnknownAliasStopsConstruction(t *testing.T) {
 	cfg, workflow := decodeInputs(t, runtimeConfig, minimalWorkflow)
 	workflow.Model = "unknown"
-	workflow.Tools = []string{"files.read"}
+	workflow.Tools = config.ToolExpression{Add: []string{"files.read"}}
 
 	constructionCalls := 0
 

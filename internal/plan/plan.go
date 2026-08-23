@@ -13,6 +13,7 @@ import (
 
 	"github.com/PedroKlein/duto-ai/internal/config"
 	"github.com/PedroKlein/duto-ai/internal/prompt"
+	dtool "github.com/PedroKlein/duto-ai/internal/tool"
 )
 
 const Version = 1
@@ -35,16 +36,17 @@ type Projection struct {
 }
 
 type Workflow struct {
-	Name        string               `json:"name"`
-	Description string               `json:"description,omitempty"`
-	Model       string               `json:"model"`
-	ModelConfig ModelConfig          `json:"model_config"`
-	Inputs      []Property           `json:"inputs"`
-	Tools       []string             `json:"tools"`
-	Limits      Limits               `json:"limits"`
-	Skills      []prompt.FrozenSkill `json:"skills"`
-	Steps       []Step               `json:"steps"`
-	Result      Result               `json:"result"`
+	Name          string               `json:"name"`
+	Description   string               `json:"description,omitempty"`
+	Model         string               `json:"model"`
+	ModelConfig   ModelConfig          `json:"model_config"`
+	Inputs        []Property           `json:"inputs"`
+	Tools         ToolScope            `json:"tools"`
+	CatalogDigest string               `json:"catalog_digest"`
+	Limits        Limits               `json:"limits"`
+	Skills        []prompt.FrozenSkill `json:"skills"`
+	Steps         []Step               `json:"steps"`
+	Result        Result               `json:"result"`
 }
 
 type ModelConfig struct {
@@ -69,7 +71,7 @@ type Step struct {
 	Instruction prompt.Frozen `json:"instruction"`
 	Model       string        `json:"model"`
 	ModelConfig ModelConfig   `json:"model_config"`
-	Tools       []string      `json:"tools"`
+	Tools       ToolScope     `json:"tools"`
 	Skills      []string      `json:"skills"`
 	Workspaces  []Workspace   `json:"workspaces"`
 	Input       Schema        `json:"input"`
@@ -81,6 +83,44 @@ type Step struct {
 type Workspace struct {
 	Name   string `json:"name"`
 	Access string `json:"access"`
+}
+
+type ToolExpression struct {
+	From           string   `json:"from"`
+	AddProfiles    []string `json:"add_profiles"`
+	Add            []string `json:"add"`
+	RemoveProfiles []string `json:"remove_profiles"`
+	Remove         []string `json:"remove"`
+}
+
+type ToolProfileExpansion struct {
+	Operation string   `json:"operation"`
+	Name      string   `json:"name"`
+	Tools     []string `json:"tools"`
+}
+
+type ToolDefinition struct {
+	Name         string   `json:"name"`
+	Capabilities []string `json:"capabilities"`
+	SideEffect   string   `json:"side_effect"`
+}
+
+type ToolLimit struct {
+	Name            string `json:"name"`
+	MaxCalls        int    `json:"max_calls"`
+	Timeout         string `json:"timeout"`
+	MaxRequestBytes int    `json:"max_request_bytes"`
+	MaxResultBytes  int    `json:"max_result_bytes"`
+}
+
+type ToolScope struct {
+	Source      ToolExpression         `json:"source"`
+	Profiles    []ToolProfileExpansion `json:"profiles"`
+	Names       []string               `json:"names"`
+	Definitions []ToolDefinition       `json:"definitions"`
+	Ceiling     []string               `json:"ceiling"`
+	Parent      []string               `json:"parent"`
+	Limits      []ToolLimit            `json:"limits"`
 }
 
 type Binding struct {
@@ -140,10 +180,6 @@ func Compile(cfg *config.Config, workflow *config.Workflow) (*Plan, error) {
 		return nil, err
 	}
 
-	if len(workflow.Tools) != 0 {
-		return nil, fmt.Errorf("workflow tools: %w", ErrUnsupportedCapability)
-	}
-
 	if validationErr := validateModelConfig(workflow.ModelConfig); validationErr != nil {
 		return nil, fmt.Errorf("workflow model config: %w", validationErr)
 	}
@@ -151,6 +187,11 @@ func Compile(cfg *config.Config, workflow *config.Workflow) (*Plan, error) {
 	limits, err := compileLimits(workflow.Limits, Limits{})
 	if err != nil {
 		return nil, fmt.Errorf("workflow limits: %w", err)
+	}
+
+	toolPolicy, err := compileWorkflowToolPolicy(cfg, workflow, limits)
+	if err != nil {
+		return nil, err
 	}
 
 	inputs, err := compileProperties(workflow.Inputs)
@@ -163,9 +204,13 @@ func Compile(cfg *config.Config, workflow *config.Workflow) (*Plan, error) {
 		return nil, err
 	}
 
-	steps, err := compileSteps(workflow, inputs, limits, workspaceRoots, frozenSkills)
+	steps, err := compileSteps(workflow, inputs, limits, workspaceRoots, frozenSkills, toolPolicy.catalog, toolPolicy.profiles, toolPolicy.ceiling, toolPolicy.scope)
 	if err != nil {
 		return nil, err
+	}
+
+	if concurrencyErr := validateToolConcurrency(steps); concurrencyErr != nil {
+		return nil, fmt.Errorf("tool concurrency: %w", concurrencyErr)
 	}
 
 	result, err := compileResult(workflow, steps)
@@ -177,16 +222,17 @@ func Compile(cfg *config.Config, workflow *config.Workflow) (*Plan, error) {
 		Version: Version,
 		Models:  models,
 		Workflow: Workflow{
-			Name:        workflow.Name,
-			Description: workflow.Description,
-			Model:       workflow.Model,
-			ModelConfig: compileModelConfig(workflow.ModelConfig, ModelConfig{}),
-			Inputs:      inputs,
-			Tools:       []string{},
-			Limits:      limits,
-			Skills:      frozenSkills,
-			Steps:       steps,
-			Result:      result,
+			Name:          workflow.Name,
+			Description:   workflow.Description,
+			Model:         workflow.Model,
+			ModelConfig:   compileModelConfig(workflow.ModelConfig, ModelConfig{}),
+			Inputs:        inputs,
+			Tools:         toolPolicy.scope,
+			CatalogDigest: catalogDigest(toolPolicy.catalog),
+			Limits:        limits,
+			Skills:        frozenSkills,
+			Steps:         steps,
+			Result:        result,
 		},
 	}
 
@@ -286,15 +332,11 @@ func resolveModels(cfg *config.Config, workflow *config.Workflow) ([]string, err
 	return models, nil
 }
 
-func compileSteps(workflow *config.Workflow, workflowInputs []Property, workflowLimits Limits, workspaceRoots map[string]string, skills []prompt.FrozenSkill) ([]Step, error) { //nolint:gocyclo // Compilation follows the fixed admission sequence.
+func compileSteps(workflow *config.Workflow, workflowInputs []Property, workflowLimits Limits, workspaceRoots map[string]string, skills []prompt.FrozenSkill, catalog dtool.Catalog, profiles map[string][]string, ceiling []string, workflowTools ToolScope) ([]Step, error) { //nolint:gocyclo // Compilation follows the fixed admission sequence.
 	steps := make([]Step, 0, len(workflow.Steps))
 	for _, source := range workflow.Steps {
 		if len(source.Needs) > 1 && source.Wait != "all_succeeded" {
 			return nil, fmt.Errorf("step %q fan-in: %w", source.ID, ErrInvalidBinding)
-		}
-
-		if len(source.Tools) != 0 {
-			return nil, fmt.Errorf("step %q capabilities: %w", source.ID, ErrUnsupportedCapability)
 		}
 
 		workspaces, err := compileWorkspaces(source.Workspaces, workspaceRoots)
@@ -340,6 +382,13 @@ func compileSteps(workflow *config.Workflow, workflowInputs []Property, workflow
 			return nil, fmt.Errorf("step %q limits: %w", source.ID, err)
 		}
 
+		toolLimits := toolLimitMap(workflowTools.Limits)
+
+		tools, err := compileToolScope(catalog, source.Tools, profiles, ceiling, workflowTools.Names, false, source.ToolLimits, toolLimits, limits)
+		if err != nil {
+			return nil, fmt.Errorf("step %q tools: %w", source.ID, err)
+		}
+
 		model := source.Model
 		if model == "" {
 			model = workflow.Model
@@ -357,7 +406,7 @@ func compileSteps(workflow *config.Workflow, workflowInputs []Property, workflow
 			Instruction: instruction,
 			Model:       model,
 			ModelConfig: compileModelConfig(source.ModelConfig, compileModelConfig(workflow.ModelConfig, ModelConfig{})),
-			Tools:       []string{},
+			Tools:       tools,
 			Skills:      selectedSkills,
 			Workspaces:  workspaces,
 			Input:       input,

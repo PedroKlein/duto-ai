@@ -43,9 +43,9 @@ func setupTestRegistry(t *testing.T) *dtool.Registry {
 	reg := dtool.NewRegistry()
 
 	names := []string{
-		"github.read-pr",
-		"github.read-diff",
-		"github.post-review",
+		"github.read.pr",
+		"github.read.diff",
+		"git.read.log",
 		"files.read",
 		"files.grep",
 	}
@@ -68,15 +68,15 @@ func setupTestRegistry(t *testing.T) *dtool.Registry {
 }
 
 func TestRegistry_RegisterAndGet(t *testing.T) {
-	reg := newMockADKTool(t, "github.read-pr", "reads a PR")
+	reg := newMockADKTool(t, "github.read.pr", "reads a PR")
 
-	got, ok := reg.Get("github.read-pr")
+	got, ok := reg.Get("github.read.pr")
 	if !ok {
-		t.Fatal("expected to find github.read-pr")
+		t.Fatal("expected to find github.read.pr")
 	}
 
-	if got.Name() != "github.read-pr" {
-		t.Errorf("name = %q, want %q", got.Name(), "github.read-pr")
+	if got.Name() != "github.read.pr" {
+		t.Errorf("name = %q, want %q", got.Name(), "github.read.pr")
 	}
 
 	_, ok = reg.Get("nonexistent")
@@ -89,7 +89,7 @@ func TestRegistry_Names(t *testing.T) {
 	reg := setupTestRegistry(t)
 
 	names := reg.Names()
-	expected := []string{"files.grep", "files.read", "github.post-review", "github.read-diff", "github.read-pr"}
+	expected := []string{"files.grep", "files.read", "git.read.log", "github.read.diff", "github.read.pr"}
 
 	if len(names) != len(expected) {
 		t.Fatalf("len = %d, want %d", len(names), len(expected))

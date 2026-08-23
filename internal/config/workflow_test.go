@@ -60,7 +60,7 @@ func TestDecodeWorkflow_MinimalNoTools(t *testing.T) {
 		t.Fatalf("DecodeWorkflow() identity = (%d, %q, %q)", workflow.Version, workflow.Name, workflow.Model)
 	}
 
-	if len(workflow.Tools) != 0 || len(workflow.Steps) != 1 || len(workflow.Steps[0].Tools) != 0 {
+	if len(workflow.Tools.Add) != 0 || len(workflow.Steps) != 1 || len(workflow.Steps[0].Tools.Add) != 0 {
 		t.Fatalf("DecodeWorkflow() tools/steps = (%v, %d, %v)", workflow.Tools, len(workflow.Steps), workflow.Steps[0].Tools)
 	}
 

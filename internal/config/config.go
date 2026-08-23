@@ -70,11 +70,14 @@ type Workspace struct {
 }
 
 type Config struct {
-	Version    int
-	Providers  map[string]Provider
-	Models     map[string]Model
-	Workspaces map[string]Workspace
-	Evidence   Evidence
+	Version      int
+	Providers    map[string]Provider
+	Models       map[string]Model
+	Workspaces   map[string]Workspace
+	ToolProfiles map[string][]string
+	Tools        []string
+	ToolLimits   map[string]ToolLimit
+	Evidence     Evidence
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -92,7 +95,7 @@ func DecodeConfig(name string, data []byte) (*Config, error) {
 		return nil, err
 	}
 
-	fields, err := mappingFields(name, root, "$", "version", "providers", "models", "workspaces", "evidence")
+	fields, err := mappingFields(name, root, "$", "version", "providers", "models", "workspaces", "tool_profiles", "tools", "tool_limits", "evidence")
 	if err != nil {
 		return nil, err
 	}
@@ -121,6 +124,21 @@ func DecodeConfig(name string, data []byte) (*Config, error) {
 		return nil, err
 	}
 
+	toolProfiles, err := decodeToolProfiles(name, fields["tool_profiles"], "$.tool_profiles")
+	if err != nil {
+		return nil, err
+	}
+
+	tools, err := decodeStringList(name, fields["tools"], "$.tools")
+	if err != nil {
+		return nil, err
+	}
+
+	toolLimits, err := decodeToolLimits(name, fields["tool_limits"], "$.tool_limits")
+	if err != nil {
+		return nil, err
+	}
+
 	evidence, err := decodeEvidence(name, fields["evidence"])
 	if err != nil {
 		return nil, err
@@ -139,7 +157,90 @@ func DecodeConfig(name string, data []byte) (*Config, error) {
 
 	evidence.Directory = os.Expand(evidence.Directory, os.Getenv)
 
-	return &Config{Version: version, Providers: providers, Models: models, Workspaces: workspaces, Evidence: evidence}, nil
+	return &Config{
+		Version:      version,
+		Providers:    providers,
+		Models:       models,
+		Workspaces:   workspaces,
+		ToolProfiles: toolProfiles,
+		Tools:        tools,
+		ToolLimits:   toolLimits,
+		Evidence:     evidence,
+	}, nil
+}
+
+func decodeToolProfiles(name string, node *yaml.Node, path string) (map[string][]string, error) {
+	if node == nil {
+		return map[string][]string{}, nil
+	}
+
+	if node.Kind != yaml.MappingNode {
+		return nil, diagnostic(name, path, node, CodeInvalidType)
+	}
+
+	profiles := make(map[string][]string, len(node.Content)/2)
+	for i := 0; i < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		if !namePattern.MatchString(key.Value) {
+			return nil, diagnostic(name, path+"."+key.Value, key, CodeInvalidValue)
+		}
+
+		selectors, err := decodeStringList(name, value, path+"."+key.Value)
+		if err != nil {
+			return nil, err
+		}
+
+		profiles[key.Value] = selectors
+	}
+
+	return profiles, nil
+}
+
+func decodeToolLimits(name string, node *yaml.Node, path string) (map[string]ToolLimit, error) {
+	if node == nil {
+		return map[string]ToolLimit{}, nil
+	}
+
+	if node.Kind != yaml.MappingNode {
+		return nil, diagnostic(name, path, node, CodeInvalidType)
+	}
+
+	limits := make(map[string]ToolLimit, len(node.Content)/2)
+	for i := 0; i < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		itemPath := path + "." + key.Value
+
+		fields, err := mappingFields(name, value, itemPath, "max_calls", "timeout", "max_request_bytes", "max_result_bytes")
+		if err != nil {
+			return nil, err
+		}
+
+		limit := ToolLimit{}
+
+		limit.MaxCalls, err = optionalInt(name, fields["max_calls"], itemPath+".max_calls")
+		if err != nil {
+			return nil, err
+		}
+
+		limit.Timeout, err = optionalString(name, fields["timeout"], itemPath+".timeout")
+		if err != nil {
+			return nil, err
+		}
+
+		limit.MaxRequestBytes, err = optionalInt(name, fields["max_request_bytes"], itemPath+".max_request_bytes")
+		if err != nil {
+			return nil, err
+		}
+
+		limit.MaxResultBytes, err = optionalInt(name, fields["max_result_bytes"], itemPath+".max_result_bytes")
+		if err != nil {
+			return nil, err
+		}
+
+		limits[key.Value] = limit
+	}
+
+	return limits, nil
 }
 
 func decodeTrustedWorkspaces(name string, node *yaml.Node) (map[string]Workspace, error) {

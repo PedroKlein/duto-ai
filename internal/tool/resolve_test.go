@@ -1,128 +1,60 @@
 package tool_test
 
 import (
+	"errors"
 	"testing"
 
 	dtool "github.com/PedroKlein/duto-ai/internal/tool"
 )
 
-func TestResolveNames(t *testing.T) {
-	defaults := []string{"github.read-diff", "github.read-pr", "files.read"}
+func TestRegistry_FilteredToolsetExposesOnlyExactNames(t *testing.T) {
+	registry := setupTestRegistry(t)
 
-	tests := []struct {
-		name      string
-		stepTools *[]string
-		expected  []string
-	}{
-		{
-			name:      "nil stepTools returns defaults",
-			stepTools: nil,
-			expected:  defaults,
-		},
-		{
-			name:      "empty stepTools returns empty",
-			stepTools: &[]string{},
-			expected:  []string{},
-		},
-		{
-			name:      "stepTools are additive",
-			stepTools: &[]string{"github.post-review", "github.add-labels"},
-			expected:  []string{"github.read-diff", "github.read-pr", "files.read", "github.post-review", "github.add-labels"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := dtool.ResolveNames(defaults, tt.stepTools)
-			if len(got) != len(tt.expected) {
-				t.Fatalf("len = %d, want %d: got %v", len(got), len(tt.expected), got)
-			}
-
-			for i, v := range got {
-				if v != tt.expected[i] {
-					t.Errorf("got[%d] = %q, want %q", i, v, tt.expected[i])
-				}
-			}
-		})
-	}
-}
-
-func TestResolve_GlobMatching(t *testing.T) {
-	reg := setupTestRegistry(t)
-
-	tests := []struct {
-		name     string
-		patterns []string
-		expected []string
-	}{
-		{
-			name:     "wildcard matches all",
-			patterns: []string{"*"},
-			expected: []string{"files.grep", "files.read", "github.post-review", "github.read-diff", "github.read-pr"},
-		},
-		{
-			name:     "namespace glob",
-			patterns: []string{"github.*"},
-			expected: []string{"github.post-review", "github.read-diff", "github.read-pr"},
-		},
-		{
-			name:     "prefix glob",
-			patterns: []string{"github.read-*"},
-			expected: []string{"github.read-diff", "github.read-pr"},
-		},
-		{
-			name:     "exact name",
-			patterns: []string{"files.read"},
-			expected: []string{"files.read"},
-		},
-		{
-			name:     "multiple patterns",
-			patterns: []string{"github.read-pr", "files.*"},
-			expected: []string{"files.grep", "files.read", "github.read-pr"},
-		},
-		{
-			name:     "no match",
-			patterns: []string{"web.*"},
-			expected: []string{},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := reg.Resolve(tt.patterns)
-			if len(got) != len(tt.expected) {
-				names := make([]string, len(got))
-				for i, tool := range got {
-					names[i] = tool.Name()
-				}
-
-				t.Fatalf("len = %d, want %d: got %v", len(got), len(tt.expected), names)
-			}
-
-			for i, tool := range got {
-				if tool.Name() != tt.expected[i] {
-					t.Errorf("got[%d] = %q, want %q", i, tool.Name(), tt.expected[i])
-				}
-			}
-		})
-	}
-}
-
-func TestNewToolset(t *testing.T) {
-	reg := setupTestRegistry(t)
-	tools := reg.Resolve([]string{"*"})
-	ts := dtool.NewToolset(tools)
-
-	if ts.Name() != "duto" {
-		t.Errorf("name = %q, want %q", ts.Name(), "duto")
-	}
-
-	resolved, err := ts.Tools(nil)
+	toolset, err := registry.FilteredToolset([]string{"files.read", "github.read.pr"})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("FilteredToolset() error = %v", err)
 	}
 
-	if len(resolved) != 5 {
-		t.Errorf("tools len = %d, want 5", len(resolved))
+	tools, err := toolset.Tools(nil)
+	if err != nil {
+		t.Fatalf("Tools() error = %v", err)
+	}
+
+	if len(tools) != 2 || tools[0].Name() != "files.read" || tools[1].Name() != "github.read.pr" {
+		t.Fatalf("filtered tools = %#v", tools)
+	}
+}
+
+func TestRegistry_FilteredToolsetRejectsMissingTool(t *testing.T) {
+	registry := setupTestRegistry(t)
+
+	_, err := registry.FilteredToolset([]string{"web.fetch"})
+	if !errors.Is(err, dtool.ErrToolUnavailable) {
+		t.Fatalf("FilteredToolset() error = %v", err)
+	}
+}
+
+func TestNewToolsetReturnsDefensiveSlices(t *testing.T) {
+	registry := setupTestRegistry(t)
+
+	toolset, err := registry.FilteredToolset([]string{"files.read"})
+	if err != nil {
+		t.Fatalf("FilteredToolset() error = %v", err)
+	}
+
+	first, err := toolset.Tools(nil)
+	if err != nil {
+		t.Fatalf("first Tools() error = %v", err)
+	}
+
+	first[0] = nil
+
+	second, err := toolset.Tools(nil)
+	if err != nil {
+		t.Fatalf("second Tools() error = %v", err)
+	}
+
+	if len(second) != 1 || second[0] == nil || second[0].Name() != "files.read" {
+		t.Fatalf("second tools = %#v", second)
 	}
 }

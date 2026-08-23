@@ -23,17 +23,19 @@ type Result struct {
 }
 
 type Workflow struct {
-	Version     int
-	Name        string
-	Description string
-	Inputs      map[string]Input
-	Model       string
-	ModelConfig ModelConfig
-	Tools       []string
-	Skills      map[string]SkillSource
-	Limits      Limits
-	Steps       []Step
-	Result      Result
+	Version      int
+	Name         string
+	Description  string
+	Inputs       map[string]Input
+	Model        string
+	ModelConfig  ModelConfig
+	ToolProfiles map[string][]string
+	Tools        ToolExpression
+	ToolLimits   map[string]ToolLimit
+	Skills       map[string]SkillSource
+	Limits       Limits
+	Steps        []Step
+	Result       Result
 }
 
 func LoadWorkflow(path string) (*Workflow, error) {
@@ -51,7 +53,7 @@ func DecodeWorkflow(name string, data []byte) (*Workflow, error) {
 		return nil, err
 	}
 
-	fields, err := mappingFields(name, root, "$", "version", "name", "description", "inputs", "model", "model_config", "tools", "skills", "limits", "steps", "result")
+	fields, err := mappingFields(name, root, "$", "version", "name", "description", "inputs", "model", "model_config", "tool_profiles", "tools", "tool_limits", "skills", "limits", "steps", "result")
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +92,7 @@ func DecodeWorkflow(name string, data []byte) (*Workflow, error) {
 		return nil, err
 	}
 
-	tools, skills, err := decodeWorkflowCapabilities(name, fields)
+	toolProfiles, tools, toolLimits, skills, err := decodeWorkflowCapabilities(name, fields)
 	if err != nil {
 		return nil, err
 	}
@@ -111,17 +113,19 @@ func DecodeWorkflow(name string, data []byte) (*Workflow, error) {
 	}
 
 	workflow := &Workflow{
-		Version:     version,
-		Name:        workflowName,
-		Description: description,
-		Inputs:      inputs,
-		Model:       model,
-		ModelConfig: modelConfig,
-		Tools:       tools,
-		Skills:      skills,
-		Limits:      limits,
-		Steps:       steps,
-		Result:      result,
+		Version:      version,
+		Name:         workflowName,
+		Description:  description,
+		Inputs:       inputs,
+		Model:        model,
+		ModelConfig:  modelConfig,
+		ToolProfiles: toolProfiles,
+		Tools:        tools,
+		ToolLimits:   toolLimits,
+		Skills:       skills,
+		Limits:       limits,
+		Steps:        steps,
+		Result:       result,
 	}
 	if err := validateDecodedWorkflow(name, workflow, fields, fields["steps"]); err != nil {
 		return nil, err
@@ -130,18 +134,28 @@ func DecodeWorkflow(name string, data []byte) (*Workflow, error) {
 	return workflow, nil
 }
 
-func decodeWorkflowCapabilities(name string, fields map[string]*yaml.Node) (tools []string, skills map[string]SkillSource, err error) {
-	tools, err = decodeStringList(name, fields["tools"], "$.tools")
+func decodeWorkflowCapabilities(name string, fields map[string]*yaml.Node) (profiles map[string][]string, tools ToolExpression, limits map[string]ToolLimit, skills map[string]SkillSource, err error) {
+	profiles, err = decodeToolProfiles(name, fields["tool_profiles"], "$.tool_profiles")
 	if err != nil {
-		return nil, nil, err
+		return nil, ToolExpression{}, nil, nil, err
+	}
+
+	tools, err = decodeToolExpression(name, fields["tools"], "$.tools")
+	if err != nil {
+		return nil, ToolExpression{}, nil, nil, err
+	}
+
+	limits, err = decodeToolLimits(name, fields["tool_limits"], "$.tool_limits")
+	if err != nil {
+		return nil, ToolExpression{}, nil, nil, err
 	}
 
 	skills, err = decodeSkills(name, fields["skills"])
 	if err != nil {
-		return nil, nil, err
+		return nil, ToolExpression{}, nil, nil, err
 	}
 
-	return tools, skills, nil
+	return profiles, tools, limits, skills, nil
 }
 
 func decodeInputs(name string, node *yaml.Node) (map[string]Input, error) {
@@ -289,7 +303,7 @@ func decodeSteps(name string, node *yaml.Node) ([]Step, error) {
 }
 
 func decodeStep(name string, node *yaml.Node, path string) (Step, error) { //nolint:gocyclo // A step is one closed source record decoded in contract order.
-	fields, err := mappingFields(name, node, path, "id", "needs", "wait", "when", "instruction", "model", "model_config", "tools", "skills", "workspaces", "input", "with", "output", "limits")
+	fields, err := mappingFields(name, node, path, "id", "needs", "wait", "when", "instruction", "model", "model_config", "tools", "tool_limits", "skills", "workspaces", "input", "with", "output", "limits")
 	if err != nil {
 		return Step{}, err
 	}
@@ -333,7 +347,12 @@ func decodeStep(name string, node *yaml.Node, path string) (Step, error) { //nol
 		return Step{}, err
 	}
 
-	tools, err := decodeStringList(name, fields["tools"], path+".tools")
+	tools, err := decodeToolExpression(name, fields["tools"], path+".tools")
+	if err != nil {
+		return Step{}, err
+	}
+
+	toolLimits, err := decodeToolLimits(name, fields["tool_limits"], path+".tool_limits")
 	if err != nil {
 		return Step{}, err
 	}
@@ -370,7 +389,52 @@ func decodeStep(name string, node *yaml.Node, path string) (Step, error) { //nol
 		return Step{}, err
 	}
 
-	return Step{ID: id, Needs: needs, Wait: wait, When: when, Instruction: instruction, Model: model, ModelConfig: modelConfig, Tools: tools, Skills: skills, Workspaces: workspaces, Input: input, With: bindings, WithOrder: bindingOrder, Output: output, Limits: limits}, nil
+	return Step{ID: id, Needs: needs, Wait: wait, When: when, Instruction: instruction, Model: model, ModelConfig: modelConfig, Tools: tools, ToolLimits: toolLimits, Skills: skills, Workspaces: workspaces, Input: input, With: bindings, WithOrder: bindingOrder, Output: output, Limits: limits}, nil
+}
+
+func decodeToolExpression(name string, node *yaml.Node, path string) (ToolExpression, error) {
+	if node == nil {
+		return ToolExpression{}, nil
+	}
+
+	if node.Kind == yaml.SequenceNode {
+		selectors, err := decodeStringList(name, node, path)
+		return ToolExpression{Add: selectors}, err
+	}
+
+	fields, err := mappingFields(name, node, path, "from", "add_profiles", "add", "remove_profiles", "remove")
+	if err != nil {
+		return ToolExpression{}, err
+	}
+
+	expression := ToolExpression{}
+
+	expression.From, err = optionalString(name, fields["from"], path+".from")
+	if err != nil {
+		return ToolExpression{}, err
+	}
+
+	expression.AddProfiles, err = decodeStringList(name, fields["add_profiles"], path+".add_profiles")
+	if err != nil {
+		return ToolExpression{}, err
+	}
+
+	expression.Add, err = decodeStringList(name, fields["add"], path+".add")
+	if err != nil {
+		return ToolExpression{}, err
+	}
+
+	expression.RemoveProfiles, err = decodeStringList(name, fields["remove_profiles"], path+".remove_profiles")
+	if err != nil {
+		return ToolExpression{}, err
+	}
+
+	expression.Remove, err = decodeStringList(name, fields["remove"], path+".remove")
+	if err != nil {
+		return ToolExpression{}, err
+	}
+
+	return expression, nil
 }
 
 func decodeInstruction(name string, node *yaml.Node, path string) (Instruction, error) {

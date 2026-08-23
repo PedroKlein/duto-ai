@@ -17,6 +17,21 @@ type Limits struct {
 	MaxArtifactBytes int
 }
 
+type ToolExpression struct {
+	From           string
+	AddProfiles    []string
+	Add            []string
+	RemoveProfiles []string
+	Remove         []string
+}
+
+type ToolLimit struct {
+	MaxCalls        int
+	Timeout         string
+	MaxRequestBytes int
+	MaxResultBytes  int
+}
+
 type InstructionKind uint8
 
 const (
@@ -103,7 +118,8 @@ type Step struct {
 	Instruction Instruction
 	Model       string
 	ModelConfig ModelConfig
-	Tools       []string
+	Tools       ToolExpression
+	ToolLimits  map[string]ToolLimit
 	Skills      []string
 	Workspaces  []WorkspaceRef
 	Input       Schema

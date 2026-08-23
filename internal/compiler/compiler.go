@@ -13,12 +13,14 @@ import (
 	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/session"
+	adktool "google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/skilltoolset"
 	"google.golang.org/adk/v2/workflow"
 	"google.golang.org/genai"
 
 	"github.com/PedroKlein/duto-ai/internal/plan"
 	"github.com/PedroKlein/duto-ai/internal/prompt"
+	dtool "github.com/PedroKlein/duto-ai/internal/tool"
 )
 
 const TerminalNodeName = "duto-terminal-result"
@@ -29,17 +31,21 @@ const (
 )
 
 var (
-	ErrNilPlan           = errors.New("plan is nil")
-	ErrNilResolver       = errors.New("model resolver is nil")
-	ErrNilResolvedModel  = errors.New("model resolver returned nil")
-	ErrInvalidInput      = errors.New("workflow input is invalid")
-	errInstructionInputs = errors.New("step inputs for instruction are not an object")
-	errPromptContext     = errors.New("step prompt context is unavailable")
-	errBindingInput      = errors.New("binding input is unavailable")
-	errTerminalStep      = errors.New("terminal step is unavailable")
+	ErrNilPlan            = errors.New("plan is nil")
+	ErrNilResolver        = errors.New("model resolver is nil")
+	ErrNilResolvedModel   = errors.New("model resolver returned nil")
+	ErrInvalidInput       = errors.New("workflow input is invalid")
+	ErrNilToolsetResolver = errors.New("toolset resolver is nil")
+	errInstructionInputs  = errors.New("step inputs for instruction are not an object")
+	errPromptContext      = errors.New("step prompt context is unavailable")
+	errBindingInput       = errors.New("binding input is unavailable")
+	errTerminalStep       = errors.New("terminal step is unavailable")
 )
 
-type ModelResolver func(context.Context, string) (model.LLM, error)
+type (
+	ModelResolver   func(context.Context, string) (model.LLM, error)
+	ToolsetResolver func([]string) (adktool.Toolset, error)
+)
 
 func ValidateInputs(compiled *plan.Plan, inputs map[string]any) error {
 	if compiled == nil {
@@ -59,6 +65,10 @@ func ValidateInputs(compiled *plan.Plan, inputs map[string]any) error {
 }
 
 func Compile(ctx context.Context, compiled *plan.Plan, resolve ModelResolver) (agent.Agent, error) {
+	return CompileWithToolsets(ctx, compiled, resolve, nil)
+}
+
+func CompileWithToolsets(ctx context.Context, compiled *plan.Plan, resolve ModelResolver, resolveToolset ToolsetResolver) (agent.Agent, error) {
 	if compiled == nil {
 		return nil, ErrNilPlan
 	}
@@ -69,7 +79,12 @@ func Compile(ctx context.Context, compiled *plan.Plan, resolve ModelResolver) (a
 
 	snapshot := compiled.Snapshot()
 
-	stepNodes, stepAgents, err := buildStepNodes(ctx, snapshot.Workflow, resolve)
+	guards, err := newToolGuards(snapshot.Workflow)
+	if err != nil {
+		return nil, fmt.Errorf("creating tool guards: %w", err)
+	}
+
+	stepNodes, stepAgents, err := buildStepNodes(ctx, snapshot.Workflow, resolve, resolveToolset, guards)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +114,7 @@ func Compile(ctx context.Context, compiled *plan.Plan, resolve ModelResolver) (a
 	return root, nil
 }
 
-func buildStepNodes(ctx context.Context, source plan.Workflow, resolve ModelResolver) (map[string]workflow.Node, []agent.Agent, error) {
+func buildStepNodes(ctx context.Context, source plan.Workflow, resolve ModelResolver, resolveToolset ToolsetResolver, guards map[string]*dtool.Guard) (map[string]workflow.Node, []agent.Agent, error) {
 	nodes := make(map[string]workflow.Node, len(source.Steps))
 
 	agents := make([]agent.Agent, 0, len(source.Steps))
@@ -113,7 +128,7 @@ func buildStepNodes(ctx context.Context, source plan.Workflow, resolve ModelReso
 			return nil, nil, ErrNilResolvedModel
 		}
 
-		stepAgent, err := newStepAgent(ctx, source.Name, step, source.Skills, llm)
+		stepAgent, err := newStepAgent(ctx, source.Name, step, source.Skills, llm, resolveToolset, guards[step.ID])
 		if err != nil {
 			return nil, nil, err
 		}
@@ -356,7 +371,7 @@ func objectInput(input any) (map[string]any, error) {
 	}
 }
 
-func newStepAgent(ctx context.Context, workflowName string, step plan.Step, skills []prompt.FrozenSkill, llm model.LLM) (agent.Agent, error) {
+func newStepAgent(ctx context.Context, workflowName string, step plan.Step, skills []prompt.FrozenSkill, llm model.LLM, resolveToolset ToolsetResolver, guard *dtool.Guard) (agent.Agent, error) {
 	cfg := llmagent.Config{
 		Name:        step.ID,
 		Description: "Execute one admitted typed step.",
@@ -402,6 +417,10 @@ func newStepAgent(ctx context.Context, workflowName string, step plan.Step, skil
 		},
 	}
 
+	if err := attachToolPolicy(&cfg, step, resolveToolset, guard); err != nil {
+		return nil, err
+	}
+
 	if len(step.Skills) > 0 {
 		source := prompt.NewSkillSource(skills, step.Skills)
 
@@ -435,6 +454,27 @@ func newStepAgent(ctx context.Context, workflowName string, step plan.Step, skil
 	}
 
 	return stepAgent, nil
+}
+
+func attachToolPolicy(cfg *llmagent.Config, step plan.Step, resolveToolset ToolsetResolver, guard *dtool.Guard) error {
+	if len(step.Tools.Names) == 0 {
+		return nil
+	}
+
+	if resolveToolset == nil {
+		return ErrNilToolsetResolver
+	}
+
+	toolset, err := resolveToolset(step.Tools.Names)
+	if err != nil {
+		return fmt.Errorf("resolving step toolset: %w", err)
+	}
+
+	cfg.Toolsets = append(cfg.Toolsets, dtool.GuardToolset(toolset, guard))
+	cfg.BeforeToolCallbacks = append(cfg.BeforeToolCallbacks, guard.BeforeToolCallback())
+	cfg.AfterToolCallbacks = append(cfg.AfterToolCallbacks, guard.AfterToolCallback())
+
+	return nil
 }
 
 func promptStateKey(invocationID, stepID string) string {
