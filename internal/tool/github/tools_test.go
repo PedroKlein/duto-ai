@@ -1,192 +1,155 @@
 package github_test
 
 import (
+	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool/toolconfirmation"
+	"google.golang.org/genai"
 
 	dtool "github.com/PedroKlein/duto-ai/internal/tool"
 	gh "github.com/PedroKlein/duto-ai/internal/tool/github"
 )
 
-func TestRegisterAll(t *testing.T) {
-	reg := dtool.NewRegistry()
-	client := gh.NewClient("test-token", "https://api.github.com")
+func TestRegisterAll_ExposesOnlyHierarchicalReadTools(t *testing.T) {
+	t.Parallel()
 
-	err := gh.RegisterAll(reg, client)
-	if err != nil {
-		t.Fatalf("RegisterAll: %v", err)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{}`)
+	}))
+	defer srv.Close()
+
+	client := newClient(t, policy(srv))
+
+	registry := dtool.NewRegistry()
+	if err := gh.RegisterAll(registry, client); err != nil {
+		t.Fatalf("RegisterAll() error = %v", err)
 	}
 
-	expectedTools := []string{
-		"github.add-labels",
-		"github.create-issue",
-		"github.edit-issue",
-		"github.list-changed-files",
-		"github.merge-pr",
-		"github.post-comment",
-		"github.post-review",
-		"github.read-checks",
-		"github.read-comments",
-		"github.read-diff",
-		"github.read-issue",
-		"github.read-pr",
-		"github.read-reviews",
-		"github.request-reviewers",
-		"github.search-issues",
+	want := []string{
+		"github.read.changed-files",
+		"github.read.checks",
+		"github.read.comments",
+		"github.read.diff",
+		"github.read.issue",
+		"github.read.pr",
+		"github.read.reviews",
+		"github.read.search-issues",
+	}
+	if got := registry.Names(); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("tool names = %v, want %v", got, want)
 	}
 
-	names := reg.Names()
-	if len(names) != len(expectedTools) {
-		t.Fatalf("registered %d tools, want %d: %v", len(names), len(expectedTools), names)
-	}
-
-	for i, name := range names {
-		if name != expectedTools[i] {
-			t.Errorf("names[%d] = %q, want %q", i, name, expectedTools[i])
+	for _, name := range want {
+		current, ok := registry.Get(name)
+		if !ok || current.Description() == "" {
+			t.Fatalf("tool %q missing or undescribed", name)
 		}
 	}
 }
 
-func TestRegisterAll_ToolsHaveDescriptions(t *testing.T) {
-	reg := dtool.NewRegistry()
-	client := gh.NewClient("token", "https://api.github.com")
+func TestGitHubToolSchemasDoNotExposeTrustedBindings(t *testing.T) {
+	t.Parallel()
 
-	if err := gh.RegisterAll(reg, client); err != nil {
-		t.Fatalf("RegisterAll: %v", err)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{}`)
+	}))
+	defer srv.Close()
+
+	registry := dtool.NewRegistry()
+	if err := gh.RegisterAll(registry, newClient(t, policy(srv))); err != nil {
+		t.Fatalf("RegisterAll() error = %v", err)
 	}
 
-	for name, tool := range reg.All() {
-		if tool.Description() == "" {
-			t.Errorf("tool %q has empty description", name)
+	for _, name := range registry.Names() {
+		current, _ := registry.Get(name)
+
+		declarer, ok := current.(interface {
+			Declaration() *genai.FunctionDeclaration
+		})
+		if !ok {
+			t.Fatalf("tool %q has no function declaration", name)
+		}
+
+		encoded, err := json.Marshal(declarer.Declaration().ParametersJsonSchema)
+		if err != nil {
+			t.Fatalf("encoding %q declaration: %v", name, err)
+		}
+
+		schema := string(encoded)
+		for _, forbidden := range []string{"owner", "repo", "repository", "number", "subject", "ref", "url", "method"} {
+			if strings.Contains(schema, `"`+forbidden+`"`) {
+				t.Errorf("tool %q exposes trusted %q binding: %s", name, forbidden, schema)
+			}
 		}
 	}
 }
 
-func TestToolExecution_ListChangedFiles(t *testing.T) {
-	// Set up mock GitHub server
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintln(w, `[{"filename":"main.go","status":"modified","additions":5,"deletions":2,"patch":"@@ -1,3 +1,8 @@"}]`)
+func TestToolExecution_UsesBoundSubject(t *testing.T) {
+	t.Parallel()
+
+	var path string
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+
+		fmt.Fprint(w, `{"title":"pr","state":"open","user":{"login":"alice"},"base":{"ref":"main"},"head":{"ref":"topic"},"labels":[]}`)
 	}))
 	defer srv.Close()
 
-	reg := dtool.NewRegistry()
-	client := gh.NewClient("token", srv.URL)
-
-	if err := gh.RegisterAll(reg, client); err != nil {
-		t.Fatalf("RegisterAll: %v", err)
+	registry := dtool.NewRegistry()
+	if err := gh.RegisterAll(registry, newClient(t, policy(srv))); err != nil {
+		t.Fatalf("RegisterAll() error = %v", err)
 	}
 
-	tool, ok := reg.Get("github.list-changed-files")
-	if !ok {
-		t.Fatal("tool not found")
-	}
+	current, _ := registry.Get("github.read.pr")
 
-	// Execute through ADK's tool.Run interface — this catches the map[string]any conversion bug
-	type runner interface {
-		Run(ctx agent.Context, args any) (map[string]any, error)
-	}
-
-	r, ok := tool.(runner)
-	if !ok {
-		t.Fatal("tool does not implement Run")
-	}
-
-	ctx := &toolTestContext{StrictContextMock: agent.StrictContextMock{Ctx: t.Context()}}
-
-	result, err := r.Run(ctx, map[string]any{
-		"owner":  "PedroKlein",
-		"repo":   "duto-test",
-		"number": float64(1), // JSON numbers are float64
+	runner, ok := current.(interface {
+		Run(agent.Context, any) (map[string]any, error)
 	})
+	if !ok {
+		t.Fatal("github.read.pr does not implement ADK Run")
+	}
+
+	ctx := &toolContext{StrictContextMock: agent.StrictContextMock{Ctx: t.Context()}}
+
+	_, err := runner.Run(ctx, map[string]any{
+		"owner":  "other",
+		"repo":   "other",
+		"number": float64(999),
+		"ref":    "other",
+	})
+	if err == nil {
+		t.Fatal("model-controlled binding unexpectedly accepted")
+	}
+
+	if path != "" {
+		t.Fatalf("policy rejection made request to %q", path)
+	}
+
+	result, err := runner.Run(ctx, map[string]any{})
 	if err != nil {
-		t.Fatalf("tool.Run: %v", err)
+		t.Fatalf("Run() error = %v", err)
 	}
 
-	if result == nil {
-		t.Fatal("expected non-nil result")
+	if path != "/repos/owner/repo/pulls/42" {
+		t.Fatalf("path = %q", path)
 	}
 
-	// Result should have a "files" key with the array
-	files, ok := result["files"]
-	if !ok {
-		t.Fatalf("result missing 'files' key, got: %v", result)
-	}
-
-	filesList, ok := files.([]any)
-	if !ok {
-		t.Fatalf("files is not []any, got %T: %v", files, files)
-	}
-
-	if len(filesList) != 1 {
-		t.Errorf("expected 1 file, got %d", len(filesList))
+	if result["title"] != "pr" {
+		t.Fatalf("result = %#v", result)
 	}
 }
 
-func TestToolExecution_PostReview(t *testing.T) {
-	var received []byte
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		received, _ = io.ReadAll(r.Body)
-
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	reg := dtool.NewRegistry()
-	client := gh.NewClient("token", srv.URL)
-
-	if err := gh.RegisterAll(reg, client); err != nil {
-		t.Fatalf("RegisterAll: %v", err)
-	}
-
-	tool, ok := reg.Get("github.post-review")
-	if !ok {
-		t.Fatal("tool not found")
-	}
-
-	type runner interface {
-		Run(ctx agent.Context, args any) (map[string]any, error)
-	}
-
-	r, ok := tool.(runner)
-	if !ok {
-		t.Fatal("tool does not implement Run")
-	}
-
-	ctx := &toolTestContext{StrictContextMock: agent.StrictContextMock{Ctx: t.Context()}}
-
-	result, err := r.Run(ctx, map[string]any{
-		"owner":  "PedroKlein",
-		"repo":   "duto-test",
-		"number": float64(1),
-		"body":   "LGTM",
-		"event":  "COMMENT",
-	})
-	if err != nil {
-		t.Fatalf("tool.Run: %v", err)
-	}
-
-	if result == nil {
-		t.Fatal("expected non-nil result")
-	}
-
-	if len(received) == 0 {
-		t.Error("expected POST body to be sent")
-	}
-}
-
-// toolTestContext overrides ToolConfirmation to return nil (no HITL required).
-type toolTestContext struct {
+type toolContext struct {
 	agent.StrictContextMock
 }
 
-func (c *toolTestContext) ToolConfirmation() *toolconfirmation.ToolConfirmation {
+func (*toolContext) ToolConfirmation() *toolconfirmation.ToolConfirmation {
 	return nil
 }

@@ -4,23 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
 )
 
-// ReadPRInput is the input for the read-pr tool.
-type ReadPRInput struct {
-	Owner  string `json:"owner"`
-	Repo   string `json:"repo"`
-	Number int    `json:"number"`
-}
-
-// ReadIssueInput is the input for the read-issue tool.
-type ReadIssueInput struct {
-	Owner  string `json:"owner"`
-	Repo   string `json:"repo"`
-	Number int    `json:"number"`
-}
-
-// ReadIssueOutput is the output from the read-issue tool.
 type ReadIssueOutput struct {
 	Title  string   `json:"title"`
 	Body   string   `json:"body"`
@@ -29,42 +17,6 @@ type ReadIssueOutput struct {
 	Labels []string `json:"labels"`
 }
 
-// ReadIssue returns issue metadata by number.
-func (c *Client) ReadIssue(ctx context.Context, input ReadIssueInput) (*ReadIssueOutput, error) {
-	path := fmt.Sprintf("/repos/%s/%s/issues/%d", input.Owner, input.Repo, input.Number)
-
-	data, err := c.get(ctx, path, "")
-	if err != nil {
-		return nil, fmt.Errorf("reading issue: %w", err)
-	}
-
-	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("parsing issue response: %w", err)
-	}
-
-	output := &ReadIssueOutput{
-		Title: getString(raw, "title"),
-		Body:  getString(raw, "body"),
-		State: getString(raw, "state"),
-	}
-
-	if user, ok := raw["user"].(map[string]any); ok {
-		output.Author = getString(user, "login")
-	}
-
-	if labels, ok := raw["labels"].([]any); ok {
-		for _, l := range labels {
-			if label, ok := l.(map[string]any); ok {
-				output.Labels = append(output.Labels, getString(label, "name"))
-			}
-		}
-	}
-
-	return output, nil
-}
-
-// ReadPROutput is the output from the read-pr tool.
 type ReadPROutput struct {
 	Title  string   `json:"title"`
 	Body   string   `json:"body"`
@@ -75,62 +27,10 @@ type ReadPROutput struct {
 	Head   string   `json:"head"`
 }
 
-// ReadPR returns PR metadata.
-func (c *Client) ReadPR(ctx context.Context, input ReadPRInput) (*ReadPROutput, error) {
-	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", input.Owner, input.Repo, input.Number)
-
-	data, err := c.get(ctx, path, "")
-	if err != nil {
-		return nil, fmt.Errorf("reading PR: %w", err)
-	}
-
-	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("parsing PR response: %w", err)
-	}
-
-	output := &ReadPROutput{
-		Title: getString(raw, "title"),
-		Body:  getString(raw, "body"),
-		State: getString(raw, "state"),
-	}
-
-	if user, ok := raw["user"].(map[string]any); ok {
-		output.Author = getString(user, "login")
-	}
-
-	if base, ok := raw["base"].(map[string]any); ok {
-		output.Base = getString(base, "ref")
-	}
-
-	if head, ok := raw["head"].(map[string]any); ok {
-		output.Head = getString(head, "ref")
-	}
-
-	if labels, ok := raw["labels"].([]any); ok {
-		for _, l := range labels {
-			if label, ok := l.(map[string]any); ok {
-				output.Labels = append(output.Labels, getString(label, "name"))
-			}
-		}
-	}
-
-	return output, nil
+type DiffResult struct {
+	Diff string `json:"diff"`
 }
 
-// ReadDiff returns the PR diff as text.
-func (c *Client) ReadDiff(ctx context.Context, input ReadPRInput) (string, error) {
-	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", input.Owner, input.Repo, input.Number)
-
-	data, err := c.get(ctx, path, "application/vnd.github.v3.diff")
-	if err != nil {
-		return "", fmt.Errorf("reading diff: %w", err)
-	}
-
-	return string(data), nil
-}
-
-// ChangedFile represents a file changed in a PR.
 type ChangedFile struct {
 	Filename  string `json:"filename"`
 	Status    string `json:"status"`
@@ -139,189 +39,47 @@ type ChangedFile struct {
 	Patch     string `json:"patch"`
 }
 
-// ListChangedFiles returns the files changed in a PR.
-func (c *Client) ListChangedFiles(ctx context.Context, input ReadPRInput) ([]ChangedFile, error) {
-	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/files", input.Owner, input.Repo, input.Number)
-
-	data, err := c.get(ctx, path, "")
-	if err != nil {
-		return nil, fmt.Errorf("listing changed files: %w", err)
-	}
-
-	var files []ChangedFile
-	if err := json.Unmarshal(data, &files); err != nil {
-		return nil, fmt.Errorf("parsing files response: %w", err)
-	}
-
-	return files, nil
+type ChangedFilesResult struct {
+	Files     []ChangedFile `json:"files"`
+	Truncated bool          `json:"truncated"`
 }
 
-func getString(m map[string]any, key string) string {
-	if v, ok := m[key].(string); ok {
-		return v
-	}
-
-	return ""
-}
-
-// ReadCommentsInput is the input for reading comments.
-type ReadCommentsInput struct {
-	Owner  string `json:"owner"`
-	Repo   string `json:"repo"`
-	Number int    `json:"number"`
-}
-
-// Comment represents a PR/issue comment.
 type Comment struct {
 	Author string `json:"author"`
 	Body   string `json:"body"`
 }
 
-// CommentsResult wraps the list of comments.
 type CommentsResult struct {
-	Comments []Comment `json:"comments"`
+	Comments  []Comment `json:"comments"`
+	Truncated bool      `json:"truncated"`
 }
 
-// ReadComments returns comments on an issue or PR.
-func (c *Client) ReadComments(ctx context.Context, input ReadCommentsInput) (*CommentsResult, error) {
-	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", input.Owner, input.Repo, input.Number)
-
-	data, err := c.get(ctx, path, "")
-	if err != nil {
-		return nil, fmt.Errorf("reading comments: %w", err)
-	}
-
-	var raw []map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("parsing comments: %w", err)
-	}
-
-	result := &CommentsResult{Comments: make([]Comment, 0, len(raw))}
-
-	for _, c := range raw {
-		author := ""
-		if user, ok := c["user"].(map[string]any); ok {
-			author = getString(user, "login")
-		}
-
-		result.Comments = append(result.Comments, Comment{
-			Author: author,
-			Body:   getString(c, "body"),
-		})
-	}
-
-	return result, nil
-}
-
-// ReadReviewsInput is the input for reading reviews.
-type ReadReviewsInput struct {
-	Owner  string `json:"owner"`
-	Repo   string `json:"repo"`
-	Number int    `json:"number"`
-}
-
-// Review represents a PR review.
 type Review struct {
 	Author string `json:"author"`
 	State  string `json:"state"`
 	Body   string `json:"body"`
 }
 
-// ReviewsResult wraps the list of reviews.
 type ReviewsResult struct {
-	Reviews []Review `json:"reviews"`
+	Reviews   []Review `json:"reviews"`
+	Truncated bool     `json:"truncated"`
 }
 
-// ReadReviews returns reviews on a PR.
-func (c *Client) ReadReviews(ctx context.Context, input ReadReviewsInput) (*ReviewsResult, error) {
-	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", input.Owner, input.Repo, input.Number)
-
-	data, err := c.get(ctx, path, "")
-	if err != nil {
-		return nil, fmt.Errorf("reading reviews: %w", err)
-	}
-
-	var raw []map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("parsing reviews: %w", err)
-	}
-
-	result := &ReviewsResult{Reviews: make([]Review, 0, len(raw))}
-
-	for _, r := range raw {
-		author := ""
-		if user, ok := r["user"].(map[string]any); ok {
-			author = getString(user, "login")
-		}
-
-		result.Reviews = append(result.Reviews, Review{
-			Author: author,
-			State:  getString(r, "state"),
-			Body:   getString(r, "body"),
-		})
-	}
-
-	return result, nil
-}
-
-// ReadChecksInput is the input for reading CI checks.
-type ReadChecksInput struct {
-	Owner string `json:"owner"`
-	Repo  string `json:"repo"`
-	Ref   string `json:"ref"` // branch name, tag, or SHA
-}
-
-// CheckRun represents a CI check.
 type CheckRun struct {
 	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 }
 
-// ChecksResult wraps the check runs.
 type ChecksResult struct {
-	Checks []CheckRun `json:"checks"`
+	Checks    []CheckRun `json:"checks"`
+	Truncated bool       `json:"truncated"`
 }
 
-// ReadChecks returns CI check runs for a ref.
-func (c *Client) ReadChecks(ctx context.Context, input ReadChecksInput) (*ChecksResult, error) {
-	path := fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs", input.Owner, input.Repo, input.Ref)
-
-	data, err := c.get(ctx, path, "")
-	if err != nil {
-		return nil, fmt.Errorf("reading checks: %w", err)
-	}
-
-	var resp map[string]any
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, fmt.Errorf("parsing checks: %w", err)
-	}
-
-	result := &ChecksResult{}
-
-	runs, _ := resp["check_runs"].([]any)
-	for _, r := range runs {
-		run, ok := r.(map[string]any)
-		if !ok {
-			continue
-		}
-
-		result.Checks = append(result.Checks, CheckRun{
-			Name:       getString(run, "name"),
-			Status:     getString(run, "status"),
-			Conclusion: getString(run, "conclusion"),
-		})
-	}
-
-	return result, nil
-}
-
-// SearchIssuesInput is the input for searching issues.
 type SearchIssuesInput struct {
-	Query string `json:"query"` // GitHub search query
+	Query string `json:"query"`
 }
 
-// SearchIssue represents a search result.
 type SearchIssue struct {
 	Number int    `json:"number"`
 	Title  string `json:"title"`
@@ -329,51 +87,314 @@ type SearchIssue struct {
 	Author string `json:"author"`
 }
 
-// SearchIssuesResult wraps issue search results.
 type SearchIssuesResult struct {
-	Issues []SearchIssue `json:"issues"`
+	Issues    []SearchIssue `json:"issues"`
+	Truncated bool          `json:"truncated"`
 }
 
-// SearchIssues searches GitHub issues and PRs.
-func (c *Client) SearchIssues(ctx context.Context, input SearchIssuesInput) (*SearchIssuesResult, error) {
-	path := "/search/issues?q=" + input.Query
+func (c *Client) ReadIssue(ctx context.Context) (*ReadIssueOutput, error) {
+	path := c.repositoryPath("/issues/" + strconv.Itoa(c.subject))
 
-	data, err := c.get(ctx, path, "")
+	data, err := c.get(ctx, "github.read.issue", path, "", nil, 0)
 	if err != nil {
-		return nil, fmt.Errorf("searching issues: %w", err)
+		return nil, fmt.Errorf("reading issue: %w", err)
 	}
 
-	var resp map[string]any
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, fmt.Errorf("parsing search results: %w", err)
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parsing issue response: %w", err)
 	}
 
-	result := &SearchIssuesResult{}
+	return &ReadIssueOutput{
+		Title:  getString(raw, "title"),
+		Body:   getString(raw, "body"),
+		Author: nestedString(raw, "user", "login"),
+		State:  getString(raw, "state"),
+		Labels: labels(raw),
+	}, nil
+}
 
-	items, _ := resp["items"].([]any)
+func (c *Client) ReadPR(ctx context.Context) (*ReadPROutput, error) {
+	path := c.repositoryPath("/pulls/" + strconv.Itoa(c.subject))
+
+	data, err := c.get(ctx, "github.read.pr", path, "", nil, 0)
+	if err != nil {
+		return nil, fmt.Errorf("reading pull request: %w", err)
+	}
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parsing pull request response: %w", err)
+	}
+
+	return &ReadPROutput{
+		Title:  getString(raw, "title"),
+		Body:   getString(raw, "body"),
+		Author: nestedString(raw, "user", "login"),
+		State:  getString(raw, "state"),
+		Labels: labels(raw),
+		Base:   nestedString(raw, "base", "ref"),
+		Head:   nestedString(raw, "head", "ref"),
+	}, nil
+}
+
+func (c *Client) ReadDiff(ctx context.Context) (*DiffResult, error) {
+	path := c.repositoryPath("/pulls/" + strconv.Itoa(c.subject))
+
+	data, err := c.get(ctx, "github.read.diff", path, "application/vnd.github.v3.diff", nil, 0)
+	if err != nil {
+		return nil, fmt.Errorf("reading pull request diff: %w", err)
+	}
+
+	return &DiffResult{Diff: string(data)}, nil
+}
+
+func (c *Client) ListChangedFiles(ctx context.Context) (*ChangedFilesResult, error) {
+	path := c.repositoryPath("/pulls/" + strconv.Itoa(c.subject) + "/files")
+
+	items, truncated, err := c.pagedArray(ctx, "github.read.changed-files", path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("listing changed files: %w", err)
+	}
+
+	files := make([]ChangedFile, len(items))
+	for i, item := range items {
+		if err := json.Unmarshal(item, &files[i]); err != nil {
+			return nil, fmt.Errorf("parsing changed file: %w", err)
+		}
+	}
+
+	return &ChangedFilesResult{Files: files, Truncated: truncated}, nil
+}
+
+func (c *Client) ReadComments(ctx context.Context) (*CommentsResult, error) {
+	path := c.repositoryPath("/issues/" + strconv.Itoa(c.subject) + "/comments")
+
+	items, truncated, err := c.pagedArray(ctx, "github.read.comments", path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("reading comments: %w", err)
+	}
+
+	comments := make([]Comment, 0, len(items))
 	for _, item := range items {
-		i, ok := item.(map[string]any)
-		if !ok {
-			continue
+		var raw map[string]any
+		if err := json.Unmarshal(item, &raw); err != nil {
+			return nil, fmt.Errorf("parsing comment: %w", err)
 		}
 
-		author := ""
-		if user, ok := i["user"].(map[string]any); ok {
-			author = getString(user, "login")
-		}
-
-		number := 0
-		if n, ok := i["number"].(float64); ok {
-			number = int(n)
-		}
-
-		result.Issues = append(result.Issues, SearchIssue{
-			Number: number,
-			Title:  getString(i, "title"),
-			State:  getString(i, "state"),
-			Author: author,
-		})
+		comments = append(comments, Comment{Author: nestedString(raw, "user", "login"), Body: getString(raw, "body")})
 	}
 
-	return result, nil
+	return &CommentsResult{Comments: comments, Truncated: truncated}, nil
+}
+
+func (c *Client) ReadReviews(ctx context.Context) (*ReviewsResult, error) {
+	path := c.repositoryPath("/pulls/" + strconv.Itoa(c.subject) + "/reviews")
+
+	items, truncated, err := c.pagedArray(ctx, "github.read.reviews", path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("reading reviews: %w", err)
+	}
+
+	reviews := make([]Review, 0, len(items))
+	for _, item := range items {
+		var raw map[string]any
+		if err := json.Unmarshal(item, &raw); err != nil {
+			return nil, fmt.Errorf("parsing review: %w", err)
+		}
+
+		reviews = append(reviews, Review{Author: nestedString(raw, "user", "login"), State: getString(raw, "state"), Body: getString(raw, "body")})
+	}
+
+	return &ReviewsResult{Reviews: reviews, Truncated: truncated}, nil
+}
+
+func (c *Client) ReadChecks(ctx context.Context) (*ChecksResult, error) {
+	path := c.repositoryPath("/commits/" + url.PathEscape(c.ref) + "/check-runs")
+	query := url.Values{}
+	collected := make([]CheckRun, 0, c.maxResults)
+	totalBytes := 0
+
+	for page := 1; page <= c.maxPages && len(collected) < c.maxResults; page++ {
+		perPage := min(100, c.maxResults-len(collected))
+
+		query.Set("page", strconv.Itoa(page))
+		query.Set("per_page", strconv.Itoa(perPage))
+
+		remaining := c.limits["github.read.checks"].MaxResultBytes - totalBytes
+		if remaining <= 0 {
+			return &ChecksResult{Checks: collected, Truncated: true}, nil
+		}
+
+		data, err := c.get(ctx, "github.read.checks", path, "", query, remaining)
+		if err != nil {
+			return nil, fmt.Errorf("reading checks page: %w", err)
+		}
+
+		totalBytes += len(data)
+
+		var response struct {
+			Checks []CheckRun `json:"check_runs"`
+		}
+		if err := json.Unmarshal(data, &response); err != nil {
+			return nil, fmt.Errorf("parsing checks: %w", err)
+		}
+
+		if len(response.Checks) > perPage {
+			collected = append(collected, response.Checks[:perPage]...)
+			return &ChecksResult{Checks: collected, Truncated: true}, nil
+		}
+
+		collected = append(collected, response.Checks...)
+		if len(response.Checks) < perPage {
+			return &ChecksResult{Checks: collected}, nil
+		}
+	}
+
+	return &ChecksResult{Checks: collected, Truncated: true}, nil
+}
+
+func (c *Client) SearchIssues(ctx context.Context, input SearchIssuesInput) (*SearchIssuesResult, error) {
+	queryText := strings.TrimSpace(input.Query)
+	if queryText == "" || strings.Contains(strings.ToLower(queryText), "repo:") {
+		return nil, ErrPolicyViolation
+	}
+
+	path := "/search/issues"
+	query := url.Values{}
+	collected := make([]SearchIssue, 0, c.maxResults)
+	totalBytes := 0
+
+	for page := 1; page <= c.maxPages && len(collected) < c.maxResults; page++ {
+		perPage := min(100, c.maxResults-len(collected))
+		query.Set("q", queryText+" repo:"+c.owner+"/"+c.repository)
+		query.Set("page", strconv.Itoa(page))
+		query.Set("per_page", strconv.Itoa(perPage))
+
+		remaining := c.limits["github.read.search-issues"].MaxResultBytes - totalBytes
+		if remaining <= 0 {
+			return &SearchIssuesResult{Issues: collected, Truncated: true}, nil
+		}
+
+		data, err := c.get(ctx, "github.read.search-issues", path, "", query, remaining)
+		if err != nil {
+			return nil, fmt.Errorf("searching issues page: %w", err)
+		}
+
+		totalBytes += len(data)
+
+		var response struct {
+			Items []json.RawMessage `json:"items"`
+		}
+		if err := json.Unmarshal(data, &response); err != nil {
+			return nil, fmt.Errorf("parsing issue search: %w", err)
+		}
+
+		pageItems := response.Items
+		pageTruncated := false
+
+		if len(pageItems) > perPage {
+			pageItems = pageItems[:perPage]
+			pageTruncated = true
+		}
+
+		for _, item := range pageItems {
+			var raw struct {
+				Number int    `json:"number"`
+				Title  string `json:"title"`
+				State  string `json:"state"`
+				User   struct {
+					Login string `json:"login"`
+				} `json:"user"`
+			}
+			if err := json.Unmarshal(item, &raw); err != nil {
+				return nil, fmt.Errorf("parsing issue search item: %w", err)
+			}
+
+			if raw.Number < 0 {
+				return nil, fmt.Errorf("parsing issue number: %w", ErrPolicyViolation)
+			}
+
+			collected = append(collected, SearchIssue{Number: raw.Number, Title: raw.Title, State: raw.State, Author: raw.User.Login})
+		}
+
+		if pageTruncated {
+			return &SearchIssuesResult{Issues: collected, Truncated: true}, nil
+		}
+
+		if len(response.Items) < perPage {
+			return &SearchIssuesResult{Issues: collected}, nil
+		}
+	}
+
+	return &SearchIssuesResult{Issues: collected, Truncated: true}, nil
+}
+
+func (c *Client) pagedArray(ctx context.Context, toolName, path string, query url.Values) ([]json.RawMessage, bool, error) {
+	if query == nil {
+		query = url.Values{}
+	}
+
+	items := make([]json.RawMessage, 0, c.maxResults)
+	totalBytes := 0
+
+	for page := 1; page <= c.maxPages && len(items) < c.maxResults; page++ {
+		perPage := min(100, c.maxResults-len(items))
+
+		query.Set("page", strconv.Itoa(page))
+		query.Set("per_page", strconv.Itoa(perPage))
+
+		remaining := c.limits[toolName].MaxResultBytes - totalBytes
+		if remaining <= 0 {
+			return items, true, nil
+		}
+
+		data, err := c.get(ctx, toolName, path, "", query, remaining)
+		if err != nil {
+			return nil, false, err
+		}
+
+		totalBytes += len(data)
+
+		var pageItems []json.RawMessage
+		if err := json.Unmarshal(data, &pageItems); err != nil {
+			return nil, false, fmt.Errorf("parsing GitHub list response: %w", err)
+		}
+
+		if len(pageItems) > perPage {
+			items = append(items, pageItems[:perPage]...)
+			return items, true, nil
+		}
+
+		items = append(items, pageItems...)
+		if len(pageItems) < perPage {
+			return items, false, nil
+		}
+	}
+
+	return items, true, nil
+}
+
+func getString(value map[string]any, key string) string {
+	result, _ := value[key].(string)
+	return result
+}
+
+func nestedString(value map[string]any, key, nested string) string {
+	object, _ := value[key].(map[string]any)
+	return getString(object, nested)
+}
+
+func labels(value map[string]any) []string {
+	raw, _ := value["labels"].([]any)
+
+	result := make([]string, 0, len(raw))
+	for _, item := range raw {
+		label, _ := item.(map[string]any)
+		if name := getString(label, "name"); name != "" {
+			result = append(result, name)
+		}
+	}
+
+	return result
 }

@@ -1,106 +1,221 @@
 package github
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+
+	dtool "github.com/PedroKlein/duto-ai/internal/tool"
 )
 
-// Client is a GitHub API HTTP client.
+var (
+	ErrAPIResponse     = errors.New("GitHub API error")
+	ErrInvalidPolicy   = errors.New("invalid GitHub tool policy")
+	ErrPolicyViolation = errors.New("GitHub request violates trusted policy")
+	ErrRequestLimit    = errors.New("GitHub request byte limit exceeded")
+	ErrResponseLimit   = errors.New("GitHub response byte limit exceeded")
+)
+
+var repositoryName = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
+var githubToolNames = []string{
+	"github.read.changed-files",
+	"github.read.checks",
+	"github.read.comments",
+	"github.read.diff",
+	"github.read.issue",
+	"github.read.pr",
+	"github.read.reviews",
+	"github.read.search-issues",
+}
+
+type Policy struct {
+	BaseURL    string
+	Token      string
+	Owner      string
+	Repository string
+	Subject    int
+	Ref        string
+	MaxPages   int
+	MaxResults int
+	Limits     map[string]dtool.ToolLimit
+	HTTPClient *http.Client
+}
+
 type Client struct {
-	baseURL    string
+	baseURL    *url.URL
 	token      string
+	owner      string
+	repository string
+	subject    int
+	ref        string
+	maxPages   int
+	maxResults int
+	limits     map[string]dtool.ToolLimit
 	httpClient *http.Client
 }
 
-// NewClient creates a GitHub API client.
-func NewClient(token, baseURL string) *Client {
+func NewClient(policy Policy) (*Client, error) {
+	baseURL, err := parseBaseURL(policy.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := validateBinding(policy); err != nil {
+		return nil, err
+	}
+
+	if err := validateLimits(policy.Limits); err != nil {
+		return nil, err
+	}
+
 	return &Client{
 		baseURL:    baseURL,
-		token:      token,
-		httpClient: http.DefaultClient,
+		token:      policy.Token,
+		owner:      policy.Owner,
+		repository: policy.Repository,
+		subject:    policy.Subject,
+		ref:        policy.Ref,
+		maxPages:   policy.MaxPages,
+		maxResults: policy.MaxResults,
+		limits:     maps.Clone(policy.Limits),
+		httpClient: redirectRejectingClient(policy.HTTPClient),
+	}, nil
+}
+
+func parseBaseURL(raw string) (*url.URL, error) {
+	baseURL, err := url.Parse(raw)
+	if err != nil || baseURL.Scheme != "https" || baseURL.Host == "" || baseURL.User != nil || baseURL.RawQuery != "" || baseURL.Fragment != "" {
+		return nil, ErrInvalidPolicy
 	}
+
+	baseURL.Path = strings.TrimRight(baseURL.Path, "/")
+	baseURL.RawPath = ""
+
+	return baseURL, nil
 }
 
-// BaseURL returns the client's base URL.
-func (c *Client) BaseURL() string {
-	return c.baseURL
+func validateBinding(policy Policy) error {
+	if !repositoryName.MatchString(policy.Owner) || !repositoryName.MatchString(policy.Repository) {
+		return ErrInvalidPolicy
+	}
+
+	if policy.Subject <= 0 || policy.Ref == "" || strings.ContainsAny(policy.Ref, "\x00\r\n") {
+		return ErrInvalidPolicy
+	}
+
+	if policy.MaxPages <= 0 || policy.MaxResults <= 0 {
+		return ErrInvalidPolicy
+	}
+
+	return nil
 }
 
-func (c *Client) get(ctx context.Context, path, accept string) ([]byte, error) {
-	url := c.baseURL + path
+func validateLimits(limits map[string]dtool.ToolLimit) error {
+	for _, name := range githubToolNames {
+		limit, ok := limits[name]
+		if !ok || limit.MaxCalls <= 0 || limit.Timeout <= 0 || limit.MaxRequestBytes < 0 || limit.MaxResultBytes <= 0 {
+			return fmt.Errorf("%w: %s", ErrInvalidPolicy, name)
+		}
+	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+	return nil
+}
+
+func redirectRejectingClient(source *http.Client) *http.Client {
+	if source == nil {
+		source = http.DefaultClient
+	}
+
+	result := *source
+	result.CheckRedirect = func(*http.Request, []*http.Request) error { return ErrPolicyViolation }
+
+	return &result
+}
+
+func (c *Client) get(ctx context.Context, toolName, path, accept string, query url.Values, maxBytes int) ([]byte, error) {
+	request, responseLimit, err := c.newRequest(ctx, toolName, path, accept, query, maxBytes)
 	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
+		return nil, err
 	}
 
-	c.setHeaders(req, accept)
-
-	return c.do(req)
+	return c.execute(request, responseLimit)
 }
 
-func (c *Client) post(ctx context.Context, path string, body []byte) error {
-	return c.mutate(ctx, http.MethodPost, path, body)
-}
+func (c *Client) newRequest(ctx context.Context, toolName, path, accept string, query url.Values, maxBytes int) (*http.Request, int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, fmt.Errorf("GitHub request context: %w", err)
+	}
 
-func (c *Client) patch(ctx context.Context, path string, body []byte) error {
-	return c.mutate(ctx, http.MethodPatch, path, body)
-}
+	if c == nil || !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "\x00\r\n") {
+		return nil, 0, ErrPolicyViolation
+	}
 
-func (c *Client) put(ctx context.Context, path string, body []byte) error {
-	return c.mutate(ctx, http.MethodPut, path, body)
-}
+	limit, ok := c.limits[toolName]
+	if !ok {
+		return nil, 0, ErrPolicyViolation
+	}
 
-func (c *Client) mutate(ctx context.Context, method, path string, body []byte) error {
-	url := c.baseURL + path
+	endpoint := strings.TrimRight(c.baseURL.String(), "/") + path
+	if encodedQuery := query.Encode(); encodedQuery != "" {
+		endpoint += "?" + encodedQuery
+	}
 
-	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
+	if limit.MaxRequestBytes > 0 && len(endpoint) > limit.MaxRequestBytes {
+		return nil, 0, ErrRequestLimit
+	}
+
+	if maxBytes <= 0 || maxBytes > limit.MaxResultBytes {
+		maxBytes = limit.MaxResultBytes
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
 	if err != nil {
-		return fmt.Errorf("creating request: %w", err)
+		return nil, 0, fmt.Errorf("creating GitHub request: %w", err)
 	}
 
-	c.setHeaders(req, "application/vnd.github.v3+json")
-	req.Header.Set("Content-Type", "application/json")
-
-	_, err = c.do(req)
-
-	return err
-}
-
-func (c *Client) setHeaders(req *http.Request, accept string) {
 	if accept == "" {
 		accept = "application/vnd.github.v3+json"
 	}
 
-	req.Header.Set("Accept", accept)
+	request.Header.Set("Accept", accept)
 
 	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+		request.Header.Set("Authorization", "Bearer "+c.token)
 	}
+
+	return request, maxBytes, nil
 }
 
-// ErrAPIResponse is returned when the GitHub API returns an error status code.
-var ErrAPIResponse = errors.New("GitHub API error")
-
-func (c *Client) do(req *http.Request) ([]byte, error) {
-	resp, err := c.httpClient.Do(req)
+func (c *Client) execute(request *http.Request, maxBytes int) ([]byte, error) {
+	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("executing request: %w", err)
+		return nil, fmt.Errorf("executing GitHub request: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { _ = response.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(response.Body, int64(maxBytes)+1))
 	if err != nil {
-		return nil, fmt.Errorf("reading response: %w", err)
+		return nil, fmt.Errorf("reading GitHub response: %w", err)
 	}
 
-	if resp.StatusCode >= http.StatusBadRequest {
-		return nil, fmt.Errorf("%w: status %d: %s", ErrAPIResponse, resp.StatusCode, string(body))
+	if len(body) > maxBytes {
+		return nil, ErrResponseLimit
+	}
+
+	if response.StatusCode >= http.StatusBadRequest {
+		return nil, fmt.Errorf("%w: status %d", ErrAPIResponse, response.StatusCode)
 	}
 
 	return body, nil
+}
+
+func (c *Client) repositoryPath(resource string) string {
+	return "/repos/" + url.PathEscape(c.owner) + "/" + url.PathEscape(c.repository) + resource
 }
