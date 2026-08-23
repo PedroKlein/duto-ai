@@ -1,11 +1,14 @@
 package files_test
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	dtool "github.com/PedroKlein/duto-ai/internal/tool"
 	"github.com/PedroKlein/duto-ai/internal/tool/files"
@@ -15,7 +18,14 @@ func TestRegisterAll(t *testing.T) {
 	root := t.TempDir()
 	reg := dtool.NewRegistry()
 
-	if err := files.RegisterAll(reg, root); err != nil {
+	if err := files.RegisterAll(reg, files.Policy{
+		Root: root,
+		Limits: map[string]dtool.ToolLimit{
+			"files.find": {MaxCalls: 1, Timeout: time.Second, MaxResultBytes: 1024},
+			"files.grep": {MaxCalls: 1, Timeout: time.Second, MaxResultBytes: 1024},
+			"files.read": {MaxCalls: 1, Timeout: time.Second, MaxResultBytes: 1024},
+		},
+	}); err != nil {
 		t.Fatalf("RegisterAll failed: %v", err)
 	}
 
@@ -37,7 +47,7 @@ func TestReadFile(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "hello.txt", "hello world")
 
-	result, err := files.ReadFile(root, "hello.txt")
+	result, err := files.ReadFile(context.Background(), testPolicy(root, 2<<20), "hello.txt")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -56,7 +66,7 @@ func TestReadFile_Truncation(t *testing.T) {
 	bigContent := strings.Repeat("x", 1<<20+100)
 	writeFile(t, root, "big.txt", bigContent)
 
-	result, err := files.ReadFile(root, "big.txt")
+	result, err := files.ReadFile(context.Background(), testPolicy(root, 2<<20), "big.txt")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,10 +80,33 @@ func TestReadFile_Truncation(t *testing.T) {
 	}
 }
 
+func TestReadFile_ContextAndResultLimit(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "data.txt", strings.Repeat("x", 256))
+
+	result, err := files.ReadFile(context.Background(), testPolicy(root, 80), "data.txt")
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
+	if !result.Truncated || len(result.Content) >= 256 {
+		t.Fatalf("ReadFile() = content bytes %d, truncated %v", len(result.Content), result.Truncated)
+	}
+
+	assertResultFits(t, result, 80)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := files.ReadFile(ctx, testPolicy(root, 80), "data.txt"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReadFile() cancellation error = %v", err)
+	}
+}
+
 func TestReadFile_PathTraversal(t *testing.T) {
 	root := t.TempDir()
 
-	_, err := files.ReadFile(root, "../etc/passwd")
+	_, err := files.ReadFile(context.Background(), testPolicy(root, 2<<20), "../etc/passwd")
 	if err == nil {
 		t.Fatal("expected error for path traversal")
 	}
@@ -86,13 +119,27 @@ func TestReadFile_PathTraversal(t *testing.T) {
 func TestReadFile_AbsolutePath(t *testing.T) {
 	root := t.TempDir()
 
-	_, err := files.ReadFile(root, "/etc/passwd")
+	_, err := files.ReadFile(context.Background(), testPolicy(root, 2<<20), "/etc/passwd")
 	if err == nil {
 		t.Fatal("expected error for absolute path")
 	}
 
 	if !errors.Is(err, files.ErrPathTraversal) {
 		t.Errorf("expected ErrPathTraversal, got: %v", err)
+	}
+}
+
+func TestReadFile_SymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	writeFile(t, outside, "secret.txt", "secret")
+
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(root, "escape.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := files.ReadFile(context.Background(), testPolicy(root, 2<<20), "escape.txt"); err == nil {
+		t.Fatal("ReadFile() error = nil for escaping symlink")
 	}
 }
 
@@ -103,7 +150,7 @@ func TestReadFile_Directory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := files.ReadFile(root, "subdir")
+	_, err := files.ReadFile(context.Background(), testPolicy(root, 2<<20), "subdir")
 	if err == nil {
 		t.Fatal("expected error for directory")
 	}
@@ -116,7 +163,7 @@ func TestReadFile_Directory(t *testing.T) {
 func TestReadFile_NotFound(t *testing.T) {
 	root := t.TempDir()
 
-	_, err := files.ReadFile(root, "nonexistent.txt")
+	_, err := files.ReadFile(context.Background(), testPolicy(root, 2<<20), "nonexistent.txt")
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -128,7 +175,7 @@ func TestFindFiles(t *testing.T) {
 	writeFile(t, root, "lib.go", "package lib")
 	writeFile(t, root, "readme.md", "# Hello")
 
-	result, err := files.FindFiles(root, "*.go", "")
+	result, err := files.FindFiles(context.Background(), testPolicy(root, 2<<20), "*.go", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -144,7 +191,7 @@ func TestFindFiles_Subdirectory(t *testing.T) {
 	writeFile(t, root, "sub/b.go", "")
 	writeFile(t, root, "sub/c.txt", "")
 
-	result, err := files.FindFiles(root, "*.go", "sub")
+	result, err := files.FindFiles(context.Background(), testPolicy(root, 2<<20), "*.go", "sub")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -154,10 +201,54 @@ func TestFindFiles_Subdirectory(t *testing.T) {
 	}
 }
 
+func TestFindFiles_DeterministicAndBounded(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"z.go", "a.go", "m.go"} {
+		writeFile(t, root, name, "package example")
+	}
+
+	result, err := files.FindFiles(context.Background(), testPolicy(root, 40), "*.go", "")
+	if err != nil {
+		t.Fatalf("FindFiles() error = %v", err)
+	}
+
+	if !result.Truncated || len(result.Paths) == 0 || result.Paths[0] != "a.go" {
+		t.Fatalf("FindFiles() = %#v", result)
+	}
+
+	assertResultFits(t, result, 40)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := files.FindFiles(ctx, testPolicy(root, 40), "*.go", ""); !errors.Is(err, context.Canceled) {
+		t.Fatalf("FindFiles() cancellation error = %v", err)
+	}
+}
+
+func TestFindFiles_SkipsSymlinks(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	writeFile(t, outside, "outside.go", "package outside")
+
+	if err := os.Symlink(filepath.Join(outside, "outside.go"), filepath.Join(root, "escape.go")); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := files.FindFiles(context.Background(), testPolicy(root, 2<<20), "*.go", "")
+	if err != nil {
+		t.Fatalf("FindFiles() error = %v", err)
+	}
+
+	if len(result.Paths) != 0 {
+		t.Fatalf("FindFiles() exposed symlink: %v", result.Paths)
+	}
+}
+
 func TestFindFiles_PathTraversal(t *testing.T) {
 	root := t.TempDir()
 
-	_, err := files.FindFiles(root, "*.go", "../..")
+	_, err := files.FindFiles(context.Background(), testPolicy(root, 2<<20), "*.go", "../..")
 	if err == nil {
 		t.Fatal("expected error for path traversal in dir")
 	}
@@ -171,7 +262,7 @@ func TestGrepFiles(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "main.go", "package main\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n")
 
-	result, err := files.GrepFiles(root, "fmt\\.Println", "")
+	result, err := files.GrepFiles(context.Background(), testPolicy(root, 2<<20), "fmt\\.Println", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -194,7 +285,7 @@ func TestGrepFiles_SingleFile(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "data.txt", "foo\nbar\nbaz\nbar again\n")
 
-	result, err := files.GrepFiles(root, "bar", "data.txt")
+	result, err := files.GrepFiles(context.Background(), testPolicy(root, 2<<20), "bar", "data.txt")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -208,7 +299,7 @@ func TestGrepFiles_InvalidRegex(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "file.txt", "content")
 
-	_, err := files.GrepFiles(root, "[invalid", "")
+	_, err := files.GrepFiles(context.Background(), testPolicy(root, 2<<20), "[invalid", "")
 	if err == nil {
 		t.Fatal("expected error for invalid regex")
 	}
@@ -218,10 +309,48 @@ func TestGrepFiles_InvalidRegex(t *testing.T) {
 	}
 }
 
+func TestGrepFiles_DeterministicBoundedAndCancelled(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "z.txt", "match z\n")
+	writeFile(t, root, "a.txt", "match a\nmatch b\n")
+
+	result, err := files.GrepFiles(context.Background(), testPolicy(root, 100), "match", "")
+	if err != nil {
+		t.Fatalf("GrepFiles() error = %v", err)
+	}
+
+	if !result.Truncated || len(result.Matches) == 0 || result.Matches[0].File != "a.txt" {
+		t.Fatalf("GrepFiles() = %#v", result)
+	}
+
+	assertResultFits(t, result, 100)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := files.GrepFiles(ctx, testPolicy(root, 100), "match", ""); !errors.Is(err, context.Canceled) {
+		t.Fatalf("GrepFiles() cancellation error = %v", err)
+	}
+}
+
+func TestGrepFiles_RejectsSymlinkTarget(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	writeFile(t, outside, "secret.txt", "match secret")
+
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(root, "escape.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := files.GrepFiles(context.Background(), testPolicy(root, 2<<20), "match", "escape.txt"); err == nil {
+		t.Fatal("GrepFiles() error = nil for escaping symlink")
+	}
+}
+
 func TestGrepFiles_PathTraversal(t *testing.T) {
 	root := t.TempDir()
 
-	_, err := files.GrepFiles(root, "pattern", "../../etc")
+	_, err := files.GrepFiles(context.Background(), testPolicy(root, 2<<20), "pattern", "../../etc")
 	if err == nil {
 		t.Fatal("expected error for path traversal")
 	}
@@ -232,6 +361,29 @@ func TestGrepFiles_PathTraversal(t *testing.T) {
 }
 
 // --- helpers ---
+
+func assertResultFits(t *testing.T, result any, limit int) {
+	t.Helper()
+
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(encoded) > limit {
+		t.Fatalf("encoded result bytes = %d, limit %d", len(encoded), limit)
+	}
+}
+
+func testPolicy(root string, resultBytes int) files.Policy {
+	limits := map[string]dtool.ToolLimit{
+		"files.find": {MaxCalls: 10, Timeout: time.Second, MaxRequestBytes: 1024, MaxResultBytes: resultBytes},
+		"files.grep": {MaxCalls: 10, Timeout: time.Second, MaxRequestBytes: 1024, MaxResultBytes: resultBytes},
+		"files.read": {MaxCalls: 10, Timeout: time.Second, MaxRequestBytes: 1024, MaxResultBytes: resultBytes},
+	}
+
+	return files.Policy{Root: root, Limits: limits}
+}
 
 func writeFile(t *testing.T, root, rel, content string) {
 	t.Helper()

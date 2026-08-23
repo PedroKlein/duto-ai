@@ -3,7 +3,10 @@
 package files
 
 import (
+	"errors"
 	"fmt"
+	"maps"
+	"os"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
@@ -17,6 +20,13 @@ const (
 	maxFindResults = 100
 	maxGrepMatches = 50
 )
+
+var ErrInvalidPolicy = errors.New("invalid file tool policy")
+
+type Policy struct {
+	Root   string
+	Limits map[string]dtool.ToolLimit
+}
 
 // ReadArgs is the input schema for the files.read tool.
 type ReadArgs struct {
@@ -60,15 +70,20 @@ type GrepResult struct {
 	Truncated bool        `json:"truncated"` // whether results were truncated at max
 }
 
-// RegisterAll creates all file tools sandboxed to root and registers them.
-func RegisterAll(reg *dtool.Registry, root string) error {
+// RegisterAll creates all file tools confined to the trusted root.
+func RegisterAll(reg *dtool.Registry, policy Policy) error {
+	policy, err := normalizePolicy(policy)
+	if err != nil {
+		return err
+	}
+
 	tools := []struct {
 		name   string
 		create func() (tool.Tool, error)
 	}{
-		{"files.read", func() (tool.Tool, error) { return newReadTool(root) }},
-		{"files.find", func() (tool.Tool, error) { return newFindTool(root) }},
-		{"files.grep", func() (tool.Tool, error) { return newGrepTool(root) }},
+		{"files.read", func() (tool.Tool, error) { return newReadTool(policy) }},
+		{"files.find", func() (tool.Tool, error) { return newFindTool(policy) }},
+		{"files.grep", func() (tool.Tool, error) { return newGrepTool(policy) }},
 	}
 
 	for _, t := range tools {
@@ -83,38 +98,69 @@ func RegisterAll(reg *dtool.Registry, root string) error {
 	return nil
 }
 
-func newReadTool(root string) (tool.Tool, error) {
+func normalizePolicy(policy Policy) (Policy, error) {
+	root, err := os.OpenRoot(policy.Root)
+	if err != nil {
+		return Policy{}, fmt.Errorf("opening file tool root: %w", err)
+	}
+
+	if err := root.Close(); err != nil {
+		return Policy{}, fmt.Errorf("closing file tool root: %w", err)
+	}
+
+	for _, name := range []string{"files.find", "files.grep", "files.read"} {
+		limit, exists := policy.Limits[name]
+		if !exists || limit.MaxCalls <= 0 || limit.Timeout <= 0 || limit.MaxRequestBytes < 0 || limit.MaxResultBytes <= 0 {
+			return Policy{}, fmt.Errorf("%w: %s", ErrInvalidPolicy, name)
+		}
+	}
+
+	policy.Limits = maps.Clone(policy.Limits)
+
+	return policy, nil
+}
+
+func (p Policy) resultLimit(name string) (int, error) {
+	limit, exists := p.Limits[name]
+	if !exists || limit.MaxResultBytes <= 0 {
+		return 0, fmt.Errorf("%w: %s", ErrInvalidPolicy, name)
+	}
+
+	return limit.MaxResultBytes, nil
+}
+
+func newReadTool(policy Policy) (tool.Tool, error) {
 	return functiontool.New[ReadArgs, *ReadResult](
 		functiontool.Config{
 			Name:        "files.read",
 			Description: "Read file content by path. Returns the content (up to 1MB) and whether it was truncated.",
 		},
-		func(_ agent.Context, args ReadArgs) (*ReadResult, error) {
-			return ReadFile(root, args.Path)
+		func(ctx agent.Context, args ReadArgs) (*ReadResult, error) {
+			return ReadFile(ctx, policy, args.Path)
 		},
 	)
 }
 
-func newFindTool(root string) (tool.Tool, error) {
+func newFindTool(policy Policy) (tool.Tool, error) {
 	return functiontool.New[FindArgs, *FindResult](
 		functiontool.Config{
 			Name:        "files.find",
 			Description: "Find files matching a glob pattern. Returns up to 100 matching paths.",
 		},
-		func(_ agent.Context, args FindArgs) (*FindResult, error) {
-			return FindFiles(root, args.Pattern, args.Dir)
+		func(ctx agent.Context, args FindArgs) (*FindResult, error) {
+			return FindFiles(ctx, policy, args.Pattern, args.Dir)
 		},
 	)
 }
 
-func newGrepTool(root string) (tool.Tool, error) {
+func newGrepTool(policy Policy) (tool.Tool, error) {
 	return functiontool.New[GrepArgs, *GrepResult](
 		functiontool.Config{
 			Name:        "files.grep",
 			Description: "Search file contents with a regex pattern. Returns matching lines with file and line number (max 50 matches).",
 		},
-		func(_ agent.Context, args GrepArgs) (*GrepResult, error) {
-			return GrepFiles(root, args.Pattern, args.Path)
+		func(ctx agent.Context, args GrepArgs) (*GrepResult, error) {
+			return GrepFiles(ctx, policy, args.Pattern, args.Path)
 		},
 	)
 }

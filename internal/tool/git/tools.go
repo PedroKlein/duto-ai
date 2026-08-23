@@ -3,7 +3,12 @@
 package git
 
 import (
+	"errors"
 	"fmt"
+	"maps"
+	"os"
+	"slices"
+	"strings"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/tool"
@@ -12,61 +17,79 @@ import (
 	dtool "github.com/PedroKlein/duto-ai/internal/tool"
 )
 
-// LogArgs is the input schema for the git.log tool.
+var ErrInvalidPolicy = errors.New("invalid git tool policy")
+
+type Policy struct {
+	Root             string
+	Refs             []string
+	AllowWorkingTree bool
+	MaxLogCount      int
+	Limits           map[string]dtool.ToolLimit
+}
+
+// LogArgs is the input schema for the git.read.log tool.
 type LogArgs struct {
-	Count  int    `json:"count"`            // number of commits to show (default: 10)
-	Path   string `json:"path,omitempty"`   // limit to commits affecting this path
-	Format string `json:"format,omitempty"` // git log format string (default: oneline)
+	Count int    `json:"count"`          // number of commits to show (default: 10)
+	Path  string `json:"path,omitempty"` // limit to commits affecting this path
 }
 
-// LogResult is the output of the git.log tool.
+// LogResult is the output of the git.read.log tool.
 type LogResult struct {
-	Output string `json:"output"` // git log output
+	Output    string `json:"output"`
+	Truncated bool   `json:"truncated"`
 }
 
-// BlameArgs is the input schema for the git.blame tool.
+// BlameArgs is the input schema for the git.read.blame tool.
 type BlameArgs struct {
 	Path      string `json:"path"`                 // file to blame
 	StartLine int    `json:"start_line,omitempty"` // start of line range (optional)
 	EndLine   int    `json:"end_line,omitempty"`   // end of line range (optional)
 }
 
-// BlameResult is the output of the git.blame tool.
+// BlameResult is the output of the git.read.blame tool.
 type BlameResult struct {
-	Output string `json:"output"` // git blame output
+	Output    string `json:"output"`
+	Truncated bool   `json:"truncated"`
 }
 
-// ShowArgs is the input schema for the git.show tool.
+// ShowArgs is the input schema for the git.read.show tool.
 type ShowArgs struct {
 	Ref string `json:"ref"` // commit hash or ref to show
 }
 
-// ShowResult is the output of the git.show tool.
+// ShowResult is the output of the git.read.show tool.
 type ShowResult struct {
-	Output string `json:"output"` // git show output
+	Output    string `json:"output"`
+	Truncated bool   `json:"truncated"`
 }
 
-// DiffArgs is the input schema for the git.diff tool.
+// DiffArgs is the input schema for the git.read.diff tool.
 type DiffArgs struct {
 	Ref  string `json:"ref,omitempty"`  // compare against this ref (default: working tree)
 	Path string `json:"path,omitempty"` // limit diff to this path
 }
 
-// DiffResult is the output of the git.diff tool.
+// DiffResult is the output of the git.read.diff tool.
 type DiffResult struct {
-	Output string `json:"output"` // diff output
+	Output    string `json:"output"`
+	Truncated bool   `json:"truncated"`
 }
 
-// RegisterAll creates all git tools sandboxed to root and registers them.
-func RegisterAll(reg *dtool.Registry, root string) error {
+// RegisterAll creates all Git read tools under trusted policy.
+func RegisterAll(reg *dtool.Registry, policy Policy) error {
+	policy, err := normalizePolicy(policy)
+	if err != nil {
+		return err
+	}
+
 	tools := []struct {
 		name   string
 		create func() (tool.Tool, error)
 	}{
-		{"git.log", func() (tool.Tool, error) { return newLogTool(root) }},
-		{"git.blame", func() (tool.Tool, error) { return newBlameTool(root) }},
-		{"git.show", func() (tool.Tool, error) { return newShowTool(root) }},
-		{"git.diff", func() (tool.Tool, error) { return newDiffTool(root) }},
+		{"git.read.log", func() (tool.Tool, error) { return newLogTool(policy) }},
+		{"git.read.blame", func() (tool.Tool, error) { return newBlameTool(policy) }},
+		{"git.read.show", func() (tool.Tool, error) { return newShowTool(policy) }},
+		{"git.read.diff", func() (tool.Tool, error) { return newDiffTool(policy) }},
 	}
 
 	for _, t := range tools {
@@ -81,70 +104,88 @@ func RegisterAll(reg *dtool.Registry, root string) error {
 	return nil
 }
 
-func newLogTool(root string) (tool.Tool, error) {
+func normalizePolicy(policy Policy) (Policy, error) {
+	info, err := os.Stat(policy.Root)
+	if err != nil {
+		return Policy{}, fmt.Errorf("stating Git root: %w", err)
+	}
+
+	if !info.IsDir() || policy.MaxLogCount <= 0 {
+		return Policy{}, ErrInvalidPolicy
+	}
+
+	for _, ref := range policy.Refs {
+		if ref == "" || strings.HasPrefix(ref, "-") || strings.ContainsAny(ref, "\x00\r\n") {
+			return Policy{}, ErrInvalidPolicy
+		}
+	}
+
+	for _, name := range []string{"git.read.blame", "git.read.diff", "git.read.log", "git.read.show"} {
+		limit, exists := policy.Limits[name]
+		if !exists || limit.MaxCalls <= 0 || limit.Timeout <= 0 || limit.MaxRequestBytes < 0 || limit.MaxResultBytes <= 0 {
+			return Policy{}, fmt.Errorf("%w: %s", ErrInvalidPolicy, name)
+		}
+	}
+
+	policy.Refs = slices.Clone(policy.Refs)
+	policy.Limits = maps.Clone(policy.Limits)
+
+	return policy, nil
+}
+
+func (p Policy) resultLimit(name string) (int, error) {
+	limit, exists := p.Limits[name]
+	if !exists || limit.MaxResultBytes <= 0 {
+		return 0, fmt.Errorf("%w: %s", ErrInvalidPolicy, name)
+	}
+
+	return limit.MaxResultBytes, nil
+}
+
+func newLogTool(policy Policy) (tool.Tool, error) {
 	return functiontool.New[LogArgs, *LogResult](
 		functiontool.Config{
-			Name:        "git.log",
-			Description: "Show recent git commits. Configure count, path filter, and format.",
+			Name:        "git.read.log",
+			Description: "Show recent Git commits with a fixed format and optional path filter.",
 		},
-		func(_ agent.Context, args LogArgs) (*LogResult, error) {
-			output, err := GitLog(root, args)
-			if err != nil {
-				return nil, err
-			}
-
-			return &LogResult{Output: output}, nil
+		func(ctx agent.Context, args LogArgs) (*LogResult, error) {
+			return GitLog(ctx, policy, args)
 		},
 	)
 }
 
-func newBlameTool(root string) (tool.Tool, error) {
+func newBlameTool(policy Policy) (tool.Tool, error) {
 	return functiontool.New[BlameArgs, *BlameResult](
 		functiontool.Config{
-			Name:        "git.blame",
+			Name:        "git.read.blame",
 			Description: "Show git blame for a file, optionally restricted to a line range.",
 		},
-		func(_ agent.Context, args BlameArgs) (*BlameResult, error) {
-			output, err := GitBlame(root, args)
-			if err != nil {
-				return nil, err
-			}
-
-			return &BlameResult{Output: output}, nil
+		func(ctx agent.Context, args BlameArgs) (*BlameResult, error) {
+			return GitBlame(ctx, policy, args)
 		},
 	)
 }
 
-func newShowTool(root string) (tool.Tool, error) {
+func newShowTool(policy Policy) (tool.Tool, error) {
 	return functiontool.New[ShowArgs, *ShowResult](
 		functiontool.Config{
-			Name:        "git.show",
+			Name:        "git.read.show",
 			Description: "Show the details of a commit (message, diff, author, etc.).",
 		},
-		func(_ agent.Context, args ShowArgs) (*ShowResult, error) {
-			output, err := GitShow(root, args)
-			if err != nil {
-				return nil, err
-			}
-
-			return &ShowResult{Output: output}, nil
+		func(ctx agent.Context, args ShowArgs) (*ShowResult, error) {
+			return GitShow(ctx, policy, args)
 		},
 	)
 }
 
-func newDiffTool(root string) (tool.Tool, error) {
+func newDiffTool(policy Policy) (tool.Tool, error) {
 	return functiontool.New[DiffArgs, *DiffResult](
 		functiontool.Config{
-			Name:        "git.diff",
+			Name:        "git.read.diff",
 			Description: "Show git diff for working tree changes or between refs.",
 		},
-		func(_ agent.Context, args DiffArgs) (*DiffResult, error) {
-			output, err := GitDiff(root, args)
-			if err != nil {
-				return nil, err
-			}
-
-			return &DiffResult{Output: output}, nil
+		func(ctx agent.Context, args DiffArgs) (*DiffResult, error) {
+			return GitDiff(ctx, policy, args)
 		},
 	)
 }
