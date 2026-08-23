@@ -1,9 +1,13 @@
 # ADR 004: Execution evidence and result contract
 
-- **Status:** Proposed revision
+- **Status:** Accepted; M1 projection and bundle shipped
 - **Date:** 2026-08-25
 - **ADK baseline:** `google.golang.org/adk/v2` v2.2.0
 - **Scope:** Redacted ADK event capture, duto policy/effect facts, deterministic result folding, and public evidence projections
+
+## M1 implementation amendment
+
+M1 ships one serialized plugin projection with `run.start`, redacted `adk.event`, and `run.finish` records, plus the atomic four-file evidence bundle. Policy-decision, side-effect, content-artifact, recovery, Action, and telemetry projections described below are reserved for later milestones. The runtime folds the typed result from the same consumed ADK event stream and writes that result into the bundle; it does not reconstruct M1 results by rereading JSONL.
 
 ## Context
 
@@ -213,27 +217,25 @@ Staged means staged, never applied. A request artifact does not prove a remote e
 
 ## Result schema
 
-`result.json` is regenerated solely from the accepted record stream and compiled plan:
+The shipped M1 `result.json` has this closed shape:
 
 ```json
 {
   "version": 1,
-  "run_id": "run-01",
+  "run_id": "run-opaque",
   "workflow": "review",
   "status": "succeeded",
   "outcome": "completed",
-  "started_at": "...",
-  "finished_at": "...",
+  "started_at": "2026-01-01T00:00:00Z",
+  "finished_at": "2026-01-01T00:00:01Z",
   "steps": [],
-  "outputs": {},
-  "artifacts": [],
+  "output": {},
   "usage": {},
-  "errors": [],
-  "recovery": []
+  "errors": []
 }
 ```
 
-Typed outputs remain bounded values validated by ADR 006. Large/source content is referenced, not embedded.
+`output` is the complete validated terminal object. Step outputs are ordered by workflow source order. Usage is optional and omitted when unavailable. Artifact and recovery lists are reserved for later milestones and are not M1 result fields.
 
 ## One stream, multiple projections
 
@@ -283,18 +285,11 @@ A complete manifest is written last. Missing or invalid manifest means evidence 
 - Publisher runs have their own run IDs and link to the verified request/manifest digest.
 - Recovery patches/bundles are artifacts, not log text.
 
-## Migration from current `WorkflowResult`
+## M1 implementation
 
-| Current behavior | V1 behavior |
-|---|---|
-| In-memory step map | Ordered step summaries derived from ADK node events |
-| First failed step helper | Deterministic status fold plus normalized errors |
-| Text/JSON/Markdown formatters | Projectors over one result |
-| Output truncation in summaries | Bounded value or content reference |
-| No retained execution evidence | One-shot JSONL/result/summary/manifest bundle; not a resumable checkpoint or session store |
-| Logs mixed with output | Progress stderr; machine result stdout/path |
+M1 emits ordered step summaries, one deterministic status fold, text or JSON projections over the same result, and an optional one-shot JSONL/result/summary/manifest bundle. Stdout contains only the selected payload; diagnostics use stderr.
 
-All 18 current `duto-test` scenarios must produce one valid result and manifest after migration. Exact scenario semantics remain in ADR 006 and the public scenario suite.
+Policy-decision, staged-effect, artifact-content, recovery, Action, and telemetry projections remain later-milestone work. The current 18-scenario ownership set is checked locally with deterministic fake models and boundaries.
 
 ## Deferred and rejected
 

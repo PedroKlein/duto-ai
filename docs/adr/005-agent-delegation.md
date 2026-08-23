@@ -1,9 +1,13 @@
 # ADR 005: ADK-native agent delegation
 
-- **Status:** Proposed revision
+- **Status:** Accepted; M1 root-chat subset shipped
 - **Date:** 2026-08-25
 - **ADK baseline:** `google.golang.org/adk/v2` v2.2.0 (`b264039aaec43baedc123e5b9a0cf87681d0bbca`)
 - **Scope:** Declared child agents, fresh/snapshot context, native dispatch, authority, bounds, failure, and lineage
+
+## M1 implementation amendment
+
+The shipped native integration executes a declared subagent tree only beneath a named `chat` agent used as the workflow's sole root and terminal step. Static `single_turn` named-agent steps cannot declare children, and `task` agents are child-only. Snapshot context on this root path supports declared workflow inputs and admitted files; ancestor-output snapshot sources reject because the root chat step has no ancestors. Persistent conversation and resume remain future-host work.
 
 ## Context
 
@@ -91,7 +95,7 @@ agents:
     mode: single_turn
     model: light
     instruction: {text: Return cited findings.}
-    tools: {allow: [web.fetch]}
+    tools: [web.fetch]
     workspaces: []
     context: {mode: fresh}
     input:
@@ -113,7 +117,7 @@ agents:
     mode: task
     model: capable
     instruction: {text: Delegate research, then produce a decision.}
-    tools: {allow: []}
+    tools: []
     subagents: [researcher]
 ```
 
@@ -163,12 +167,7 @@ Implementation uses native `IncludeContentsNone`, `ModeSingleTurn`, task isolati
 
 ### Snapshot
 
-`snapshot` adds a deterministic, bounded block built from sources declared in workflow YAML:
-
-- workflow inputs;
-- statically available ancestor output ports;
-- admitted files;
-- admitted artifact references and bounded extracted text.
+`snapshot` adds a deterministic, bounded block built from declared workflow inputs and admitted files. The root-chat placement has no ancestor output, and M1 has no portable artifact source.
 
 Example:
 
@@ -177,7 +176,6 @@ context:
   mode: snapshot
   include:
     - input: objective
-    - output: {step: inspect, path: [findings]}
     - file: {workspace: source, path: README.md, max_bytes: 32768}
 ```
 
@@ -189,7 +187,7 @@ Duto compiles the declaration to an ADK `InstructionProvider`/input builder that
 - redaction/content-reference rules from ADR 004;
 - no credentials, concrete roots, provider data, raw thought, or undeclared session state.
 
-The compiler proves each dynamic child can access every declared source on every admitted call path. If it cannot, the value must be supplied as a normal typed child input or the declaration is rejected.
+The compiler proves the root chat activation can access every declared source. If it cannot, the value must be supplied as a normal typed child input or the declaration is rejected.
 
 Snapshot content is untrusted prompt data. Provenance does not grant authority or guarantee correctness.
 

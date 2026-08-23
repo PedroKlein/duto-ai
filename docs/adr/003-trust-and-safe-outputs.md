@@ -1,6 +1,6 @@
 # ADR 003: Trust and safe side effects
 
-- **Status:** Proposed revision
+- **Status:** Accepted for M3; not implemented in M1
 - **Date:** 2026-08-25
 - **Scope:** Trusted-context derivation, capability decisions, clarification delivery, staged/direct remote effects, and immutable Git/GitHub invariants
 
@@ -220,7 +220,7 @@ Local authoring:
 - rejects an unexpected dirty baseline;
 - permits only normalized allowed paths beneath the writable root;
 - rejects traversal, symlink escape, ignored-file bypass, submodule escape, and unrelated staged content;
-- stages explicit pathspecs only—never `git add -A` or `git add .`;
+- stages explicit pathspecs only, never `git add -A` or `git add .`;
 - creates a forward-only commit chain rooted at the attested base;
 - records a recovery patch/bundle before cleanup on failure.
 
@@ -275,11 +275,11 @@ Required negative tests assert zero calls at the protected boundary for:
 
 Live mutation tests never substitute for these deterministic checks.
 
-## Migration and milestone placement
+## Milestone placement
 
-- M1 implements pure trust resolution, effective-plan decisions, and the admitted bounded compatibility tools.
+- M1 ships the effective-plan authority checks and bounded read/process tools. It has no host trust-context document, mutation, or publisher.
 - M2 maps one-shot GitHub Action inputs, permissions, results, summaries, outputs, and artifacts over the same CLI contract.
-- M3 adds bounded workspace/Git mutation, one-activation recovery artifacts, staged safe outputs, and trusted publication.
+- M3 implements this ADR's trust-context derivation, bounded workspace/Git mutation, one-activation recovery artifacts, staged safe outputs, and trusted publication.
 - The future durable-host milestone owns cross-activation disposition storage, reconciliation/replay, and asynchronous reply correlation.
 - Clarification is an M1 typed result; M2 may project it, while remote application follows the M3 operation contract.
 

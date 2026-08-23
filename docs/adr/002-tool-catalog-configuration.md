@@ -1,13 +1,17 @@
 # ADR 002: Tool catalog and policy
 
-- **Status:** Proposed revision
+- **Status:** Accepted; M1 implementation shipped
 - **Date:** 2026-08-25
 - **ADK baseline:** `google.golang.org/adk/v2` v2.2.0
 - **Scope:** Built-in tool identity, exact allowlists, resource bounds, runtime guards, and ADK wiring
 
+## M1 implementation amendment
+
+M1 ships the fixed read/process catalog, strict selectors, flat profiles, trusted ceilings, parent subset checks, exact per-tool limits, run-scoped construction, attempt accounting, and family boundary checks. Host trust-context derivation, mutation/effect classes, and publication remain M3 work under ADR 003.
+
 ## Context
 
-The current resolver adds step tools to defaults and treats malformed or unmatched glob patterns leniently. A reviewer cannot determine a step's authority from the step declaration alone.
+The superseded resolver added step tools to defaults and treated malformed or unmatched glob patterns leniently. A reviewer could not determine a step's authority from the step declaration alone.
 
 Duto needs a small policy compiler, not a second tool runtime. ADK already supplies `tool.Tool`, `tool.Toolset`, `tool.FilterToolset`, typed `functiontool.New`, tool callbacks, confirmations, and caller-controlled function-call scheduling.
 
@@ -124,7 +128,7 @@ Current capability classes are:
 
 The classes are policy facts, not workflow selectors.
 
-M1 registers only the accepted names for currently shipped families. It does not retain aliases for the v0.2 names.
+M1 registers only the accepted hierarchical names for the shipped families. Removed names are not retained as aliases.
 
 | Family | M1 names | Later |
 |---|---|---|
@@ -196,7 +200,7 @@ Each attempted call atomically debits per-tool, step/agent, and run counters bef
 
 ## Effective plan
 
-A pure compiler intersects trusted ceilings, profile/selector expansion, parent authority, exact per-tool limits, scope limits, and trust decisions before constructing providers, handlers, clients, processes, or ADK agents.
+The pure M1 compiler intersects trusted ceilings, profile/selector expansion, parent authority, exact per-tool limits, and scope limits before constructing providers, handlers, clients, processes, or ADK agents. M3 will add host trust and effect decisions to that plan.
 
 The complete plan lists, for every workflow scope, named-agent use, and step:
 
@@ -239,18 +243,11 @@ For every attempted call:
 7. Bound or reject its result according to the family contract.
 8. Emit redacted evidence through ADR 004.
 
-Categorical violations—wrong workspace, path, ref, command, domain, repository, or method—are rejected. Numeric requests may be clamped only within an already-approved category and the applied value is observable.
+Categorical violations, such as the wrong workspace, path, ref, command, domain, repository, or method, are rejected. Numeric requests may be clamped only within an already-approved category and the applied value is observable.
 
-## Migration from v0.2
+## Replacement behavior
 
-| Current behavior | V1 behavior |
-|---|---|
-| Omitted step tools use defaults | Omitted inline tools means no tools |
-| Step list adds to defaults | Exact replacement/subset |
-| Invalid pattern may become literal | Decode/selector error |
-| Unmatched pattern may produce empty set | Selector error |
-| All families constructed before execution | Construct only after plan validation |
-| Shell described as bounded/sandboxed | Explicit high-risk compatibility tool; no sandbox claim |
+M1 has no additive defaults, compatibility aliases, or permissive glob fallback. Omitted tools mean no tools. Invalid or unmatched selectors reject before construction. Tool families are constructed only after plan validation. The process tool is bounded but is never described as a sandbox.
 
 Scenario implications:
 

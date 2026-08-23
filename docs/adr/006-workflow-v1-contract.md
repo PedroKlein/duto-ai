@@ -1,9 +1,9 @@
 # ADR 006: Lean v1 workflow contract
 
-- **Status:** Proposed revision
+- **Status:** Accepted; CLI-first M1 implementation shipped
 - **Date:** 2026-08-25
 - **ADK baseline:** `google.golang.org/adk/v2` v2.2.0 (`b264039aaec43baedc123e5b9a0cf87681d0bbca`)
-- **Scope:** Strict portable YAML, trusted runtime ownership, typed data, static graphs, native ADK agents/workflows, outcomes, clarification, retries, limits, and v0.2 migration
+- **Scope:** Strict portable YAML, trusted runtime ownership, typed data, static graphs, native ADK agents/workflows, outcomes, clarification, retries, and limits
 
 ## Context
 
@@ -39,7 +39,7 @@ Expose `AgentNode`, `JoinNode`, `DynamicNode`, state keys, and native options di
 | Simple workflow | Verbose | Small | Framework-heavy |
 | Reusable/delegated agent | Strong | Strong when needed | Strong |
 | Static inspection | Strong | Strong | Strong but runtime-coupled |
-| Migration from v0.2 | Medium | Best | Poor |
+| Replacement of the prior contract | Medium | Best | Poor |
 | Interface size | Medium | Smallest | Large |
 
 ## Decision
@@ -65,12 +65,9 @@ models:
   light: {provider: default, target: model-a}
   capable: {provider: default, target: model-b}
 workspaces:
-  source: {root: "${GITHUB_WORKSPACE}", access: read}
-trust:
-  unknown: forked_pr
+  source: {root: "${DUTO_WORKSPACE}", access: read}
 evidence:
-  max_events: 10000
-  max_bytes: 16777216
+  directory: "${DUTO_EVIDENCE_DIRECTORY}"
 ```
 
 It owns:
@@ -78,8 +75,9 @@ It owns:
 - provider adapters/configuration, credentials, endpoints, and concrete targets;
 - workspace roots/provenance and maximum access;
 - centrally reusable flat tool profiles, tool-family ceilings, and fixed command/resource bindings;
-- trust policy/admissions;
-- evidence and runtime limits.
+- the optional one-shot evidence directory.
+
+Host trust-context policy and publication admissions are M3 configuration, not accepted M1 fields.
 
 ### Portable workflow document
 
@@ -112,7 +110,7 @@ Before semantic validation, reject:
 
 Trusted adapter-owned scalar values may expand environment variables only after structural decoding. Expanded values are never copied to diagnostics or evidence.
 
-Errors retain file, line, column, and field path. A missing version is not guessed as v0.2; it produces an actionable migration diagnostic.
+Errors retain file, line, column, and field path. A missing version is rejected rather than guessed as another schema.
 
 ## Names
 
@@ -191,13 +189,29 @@ limits:
   max_parallel_calls: 4
   max_artifact_bytes: 8388608
 
-steps: []
+steps:
+  - id: terminal-step
+    needs: []
+    instruction: Return the objective.
+    tools: []
+    workspaces: []
+    input:
+      type: object
+      properties: {objective: {type: string, max_length: 4096}}
+      required: [objective]
+    with: {objective: {input: objective}}
+    output:
+      type: object
+      properties:
+        outcome: {type: string, enum: [completed]}
+        report: {type: string, max_length: 4096}
+      required: [outcome, report]
 result: {step: terminal-step}
 ```
 
-Required fields are `version`, `name`, `model`, `limits`, `steps`, and `result`. Empty maps/lists are valid. Description, inputs, model config, profiles, skills, and named agents are optional.
+Required fields are `version`, `name`, `model`, `limits`, `steps`, and `result`. `steps` must contain at least one step. Optional collections may be empty where their field contract allows it. Description, inputs, model config, profiles, skills, and named agents are optional.
 
-The workflow model is the default logical alias. An agent or step may select another trusted alias explicitly; it cannot select a concrete target. There is no separate allowed-alias list—the finite set is the aliases actually referenced by the validated workflow and present in trusted runtime configuration.
+The workflow model is the default logical alias. An agent or step may select another trusted alias explicitly; it cannot select a concrete target. There is no separate allowed-alias list. The finite set is the aliases actually referenced by the validated workflow and present in trusted runtime configuration.
 
 Portable model config contains only `temperature` and `max_output_tokens`. Provider-specific workflow extras are deferred.
 
@@ -322,7 +336,7 @@ Modes map directly to ADK:
 - `task`: delegated task child only; returns through native `finish_task` and may not remain waiting for another user turn;
 - `chat`: root coordinator only, directly reachable from workflow start; may own declared subagents.
 
-These restrictions mirror ADK workflow validation. Task agents are not static graph nodes, and chat agents are not placed after another node. A root chat step has `needs: []`; its `with` values may use workflow inputs/literals only and are encoded as the invocation's user content rather than a predecessor-node output.
+These restrictions mirror ADK workflow validation. Task agents are not static graph nodes, and chat agents are not placed after another node. In the shipped M1 compiler, any named agent with subagents must be reached through the sole root and terminal `chat` step. A static `single_turn` named-agent step cannot declare children. A root chat step has `needs: []`; its `with` values may use workflow inputs/literals only and are encoded as the invocation's user content rather than a predecessor-node output.
 
 A named agent with subagents lists them exactly:
 
@@ -427,27 +441,13 @@ Static validation requires exactly one route for every reachable terminal `(step
 
 Selection occurs only after successful graph quiescence. Successfully validated terminal outputs are examined deterministically in source order, but order is not a tie-breaker: exactly one eligible pair must exist. Zero is `result_uncovered`; more than one is `result_ambiguous`. A skipped terminal supplies no candidate. A failed terminal has no output and fail-fast execution wins; expected unavailability remains a successful typed domain outcome. Static coverage/reachability/schema errors are admission failures; runtime uncovered/ambiguous results are execution failures. Domain outcome never overrides ADR 004 execution status.
 
-## Structured output and artifacts
+## Structured output and evidence
 
-Duto sets native ADK `llmagent.Config.OutputSchema` for structured chat/single-turn results. ADK v2.2.0 supports output schemas with tools through its native response mechanism. Task children use native `finish_task` with the same output schema.
+Duto sets native ADK `llmagent.Config.OutputSchema` for structured chat and single-turn results. ADK v2.2.0 supports output schemas with tools through its native response mechanism. Task children use native `finish_task` with the same output schema.
 
 A `single_turn` AgentNode emits typed `Event.Output` normally. A root `chat` coordinator is a terminal special case because ADK chat AgentNodes do not emit workflow output: duto assigns a private run-namespaced `OutputKey`, consumes the runner iterator, then reads and validates that final state value as the workflow result. A chat coordinator cannot feed downstream steps or use an in-graph finish route; its sole terminal result is projected after the run.
 
-Duto does not parse an extra custom final-text envelope.
-
-Artifacts are declared only when a workflow needs them:
-
-```yaml
-artifacts:
-  patch:
-    media_type: text/x-diff
-    max_count: 1
-    max_bytes: 1048576
-```
-
-The output schema references runtime-issued artifact names/IDs. Duto validates name, producer, media type, count, bytes, and effective policy; ADR 004 owns storage, scanning, digests, retention, and projection.
-
-Undeclared artifacts reject. Artifact bytes are not embedded in model/tool responses.
+Duto does not parse an extra custom final-text envelope. M1 has no portable `artifacts` declaration. `max_artifact_bytes` bounds admitted context and leaves room for a later artifact contract. The optional trusted evidence directory is governed by ADR 004 and is not workflow-controlled.
 
 ## Retry, timeout, and failure
 
@@ -462,7 +462,7 @@ retry:
   max_delay: 8s
 ```
 
-Duto builds ADK `RetryConfig` with exponential backoff and a predicate over ADR 001 normalized kinds `rate_limited`, `unavailable`, and `timeout`.
+Duto builds ADK `RetryConfig` with exponential backoff. The shipped adapter recognizes normalized timeout errors. Additional rate-limit and unavailable categories require stable typed errors from the provider adapter and are not inferred from strings.
 
 Rules:
 
@@ -521,7 +521,7 @@ Omission inherits an already-bounded value and never means unlimited. Agent and 
 
 The accepted `duto-ai plan` command emits the complete normalized plan used by one-shot `run`. For the workflow, every named-agent use, and every step it includes source tool expressions, profile provenance and exact expansion, final tool names in catalog-name byte order, parent authority, capability/side-effect classes, symbolic resources, exact per-tool limits, and final run/activation/step iteration, call, timeout, artifact, and concurrency limits. It also includes trusted ceiling and catalog identifiers/digests without secret values or concrete host roots.
 
-Every instruction includes its normalized kind, symbolic workspace/path when applicable, source bytes and SHA-256 digest, source and rendered bounds, statically known template-data dependencies, and safe content or a `redacted`/`digest_only` disposition. A plan normally has schemas but no runtime workflow-input values, so data-dependent rendering is marked `deferred` with exact dependencies rather than using fabricated placeholders. Templates depending only on plan-known values may render. Run evidence records rendered bytes/digest and safe/redacted disposition before the model call; runtime values are not printed merely because a template references them.
+Every instruction includes its normalized kind, symbolic workspace/path when applicable, frozen source bytes and SHA-256 digest, source and rendered bounds, statically known template-data dependencies, and `static` or `deferred` rendering state. The plan contains admitted instruction and skill content, so callers must protect a saved plan according to that source material. A plan has schemas but no runtime workflow-input values; data-dependent rendering remains deferred. Run evidence omits raw rendered prompts.
 
 The plan also includes the normalized direct/routed terminal result, every reachable terminal `(step, outcome)` pair, complete static coverage, deterministic route order, and the derived terminal discriminated schema.
 
@@ -793,7 +793,7 @@ agents:
     description: Coordinate the review.
     mode: chat
     model: capable
-    instruction: {text: Call researcher when evidence is needed, then decide.}
+    instruction: {text: "Call researcher when evidence is needed, then decide."}
     # Its child must remain within this orchestrator authority.
     tools: [web.fetch]
     workspaces: []
@@ -900,6 +900,7 @@ steps:
       required: [outcome]
   - id: report
     needs: [primary, enrichment]
+    wait: all_succeeded
     instruction: {text: Report primary findings and state whether enrichment was unavailable.}
     tools: []
     workspaces: []
@@ -907,12 +908,12 @@ steps:
       type: object
       properties:
         findings: {type: string, max_length: 8192}
-        enrichment_outcome: {type: string, enum: [completed, unavailable]}
+        enrichment-outcome: {type: string, enum: [completed, unavailable]}
         context: {type: string, max_length: 8192}
-      required: [findings, enrichment_outcome]
+      required: [findings, enrichment-outcome]
     with:
       findings: {output: {step: primary, path: [findings]}}
-      enrichment_outcome: {output: {step: enrichment, path: [outcome]}}
+      enrichment-outcome: {output: {step: enrichment, path: [outcome]}}
       context: {output: {step: enrichment, path: [context]}, optional: true}
     output:
       type: object

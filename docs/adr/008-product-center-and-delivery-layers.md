@@ -1,6 +1,6 @@
 # ADR 008: CLI-first workflow runtime and delivery layers
 
-- **Status:** Accepted
+- **Status:** Accepted; M1 shipped
 - **Date:** 2026-08-26
 - **Scope:** Product center, host-adapter relationship, planning boundary, milestone order, and disposition of durable-session decisions
 
@@ -30,6 +30,10 @@ workflow YAML
 
 GitHub Actions remains a first-class official adapter. It maps trusted event inputs, permissions, summaries, outputs, and artifacts into the same core runtime. GitHub does not define portable workflow semantics, session identity, or the ordinary local execution path.
 
+## Implementation status
+
+The CLI-first M1 layer is implemented. M2, M3, optional persistence, and durable-host behavior remain unimplemented and must not be inferred from the M1 binary or evidence bundle.
+
 ## Delivery layers
 
 ### Layer 1: Core workflow runtime
@@ -37,7 +41,7 @@ GitHub Actions remains a first-class official adapter. It maps trusted event inp
 Required for the product to be useful:
 
 - strict portable and trusted configuration;
-- model aliases and admitted direct model references;
+- logical model aliases bound to trusted concrete targets;
 - exact tool and workspace subsets;
 - bounded prompt templates and typed inputs/outputs;
 - static DAG validation and effective-plan inspection;

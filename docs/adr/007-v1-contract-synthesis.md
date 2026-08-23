@@ -1,6 +1,6 @@
 # ADR 007: Lean v1 contract synthesis
 
-- **Status:** Superseded in milestone ordering by [ADR 008](008-product-center-and-delivery-layers.md); contract details remain revision inputs
+- **Status:** Accepted contract synthesis; milestone ordering is superseded by [ADR 008](008-product-center-and-delivery-layers.md)
 - **Date:** 2026-08-25
 - **ADK baseline:** `google.golang.org/adk/v2` v2.2.0 (`b264039aaec43baedc123e5b9a0cf87681d0bbca`)
 - **Scope:** Canonical ownership across ADRs 001–006, use-case traceability, duto-test verification, and the historical M1 boundary
@@ -33,8 +33,8 @@ trusted runtime resources + portable workflow + trusted control evidence
         -> model/tool/workspace/trust narrowing
         -> construct native ADK models, toolsets, agents, workflow nodes, and services
         -> run one ADK runner/workflow/session
-        -> plugin projects redacted ADK events + duto policy/effect facts
-        -> result.json, summary, manifest, Action outputs, and safe-output requests
+        -> plugin projects redacted ADK events
+        -> typed result and optional one-shot evidence bundle
 ```
 
 No provider, client, tool handler, process, agent, ADK node, or remote adapter is constructed before the effective plan validates.
@@ -46,12 +46,13 @@ No provider, client, tool handler, process, agent, ADK node, or remote adapter i
 - strict portable/trusted YAML and source diagnostics;
 - logical model aliases and trusted concrete bindings;
 - exact tool/workspace authority and runtime guards;
-- trust-context derivation and remote-effect policy;
-- Git/GitHub safety invariants;
+- exact M1 tool authority and resource policy;
+- in M3, host trust-context derivation, remote-effect policy, and Git/GitHub mutation invariants;
 - typed portable workflow declarations, outcomes, and source bindings;
 - fresh/snapshot disclosure policy;
-- redaction, public result/evidence, and staged operation manifests;
-- v0.2 migration diagnostics.
+- redaction and public M1 result/evidence;
+- in M3, staged operation manifests;
+- rejection of removed syntax and compatibility paths.
 
 ### ADK owns
 
@@ -69,22 +70,20 @@ Duto wraps native behavior only where policy, redaction, source syntax, or publi
 
 | Concept | Canonical owner | Frozen invariant |
 |---|---|---|
-| Provider/model seam and trusted bindings | [ADR 001 — Decision](001-provider-model-policy.md#decision), [Configuration ownership](001-provider-model-policy.md#configuration-ownership) | One consumer-owned resolver returns native `model.LLM`; workflows use logical aliases only. |
-| Model lifecycle/errors/conformance | [ADR 001 — Lifecycle](001-provider-model-policy.md#lifecycle), [Stable errors](001-provider-model-policy.md#stable-errors), [Adapter conformance](001-provider-model-policy.md#adapter-conformance) | Run-local construction/reuse; small derived error policy; native schema/tools/usage/cancellation/streaming preserved. |
-| Built-in tool identity and exact sets | [ADR 002 — Built-in catalog](002-tool-catalog-configuration.md#built-in-catalog), [Source semantics](002-tool-catalog-configuration.md#source-semantics) | Registration grants no authority; omission/empty means no tools; step overrides are direct-set subsets, while declared subagents are bounded by the separate transitive delegation envelope. |
-| Tool resources, plan, and guards | [ADR 002 — Resource and limit policy](002-tool-catalog-configuration.md#resource-and-limit-policy), [Effective plan](002-tool-catalog-configuration.md#effective-plan), [Invocation contract](002-tool-catalog-configuration.md#invocation-contract) | Trusted roots/commands/resources remain hidden; categorical violations reject at compile and I/O boundaries. |
-| Trust and capability decisions | [ADR 003 — Trusted-context derivation](003-trust-and-safe-outputs.md#trusted-context-derivation), [Capability trust matrix](003-trust-and-safe-outputs.md#capability-trust-matrix) | Only control-plane evidence grants trust; unknown equals fork least privilege; delegation cannot amplify. |
-| Remote operations and clarification | [ADR 003 — One typed safe-output contract](003-trust-and-safe-outputs.md#one-typed-safe-output-contract), [Clarification through GitHub channels](003-trust-and-safe-outputs.md#clarification-through-github-channels) | Staged by default; authority fields runtime-owned; clarification terminates and replies through the bound conversation. |
-| Git/workspace safety | [ADR 003 — Local mutation and Git invariants](003-trust-and-safe-outputs.md#local-mutation-and-git-invariants) | One writer/new namespaced branch only; no force, rewrite, default/protected/cross-repo writes, or merge. |
-| Event capture and portable records | [ADR 004 — ADK capture](004-execution-ledger.md#adk-capture), [Portable record](004-execution-ledger.md#portable-record), [Duto-owned facts](004-execution-ledger.md#duto-owned-facts) | One concrete plugin-backed writer projects ADK events and adds only duto policy/effect facts. |
-| Redaction/status/projections | [ADR 004 — Redaction and retention](004-execution-ledger.md#redaction-and-retention), [Deterministic status and outcome](004-execution-ledger.md#deterministic-status-and-outcome), [One stream, multiple projections](004-execution-ledger.md#one-stream-multiple-projections) | Thought/secrets omitted; missing usage absent; one fold drives result, summary, outputs, and manifest. |
-| Native delegation and child definitions | [ADR 005 — Decision](005-agent-delegation.md#decision), [Declared child contract](005-agent-delegation.md#declared-child-contract), [Native modes](005-agent-delegation.md#native-modes) | Declared ADK SubAgents become per-child tools; no aggregate delegation protocol or nested runner. |
-| Child context and authority | [ADR 005 — Child context construction](005-agent-delegation.md#child-context-construction), [Authority and graph rules](005-agent-delegation.md#authority-and-graph-rules) | Only fresh/snapshot; model cannot choose context/model/tools/workspaces/budget; graph finite and acyclic. |
-| Delegation scheduling/result/lineage | [ADR 005 — Parallel and sequential behavior](005-agent-delegation.md#parallel-and-sequential-behavior), [Results and failure](005-agent-delegation.md#results-and-failure), [Lineage and evidence](005-agent-delegation.md#lineage-and-evidence) | ADK owns dispatch/function responses; TaskRunner bounds safe fan-out; native IDs establish lineage. |
-| Strict workflow syntax and schemas | [ADR 006 — Strict decoding](006-workflow-v1-contract.md#strict-decoding), [Bounded schemas](006-workflow-v1-contract.md#bounded-schemas), [Portable root contract](006-workflow-v1-contract.md#portable-root-contract) | Versioned closed YAML compiles to native ADK schemas; no expressions, templates, generic extras, or public state keys. |
-| Agents, steps, data, and routing | [ADR 006 — Named agents and native modes](006-workflow-v1-contract.md#named-agents-and-native-modes), [Steps and bindings](006-workflow-v1-contract.md#steps-and-bindings), [Routing and terminal results](006-workflow-v1-contract.md#routing-and-terminal-results) | One typed object per step; explicit ancestor paths; fail-fast all-succeeded fan-in; native ADK mode placement. |
-| Structured results, retry, limits, clarification | [ADR 006 — Structured output and artifacts](006-workflow-v1-contract.md#structured-output-and-artifacts), [Retry, timeout, and failure](006-workflow-v1-contract.md#retry-timeout-and-failure), [Limits](006-workflow-v1-contract.md#limits), [Clarification](006-workflow-v1-contract.md#clarification) | Native OutputSchema/finish_task/NodeConfig; terminal chat OutputKey extraction; enforceable call/time/parallel limits; terminal awaiting-input result. |
-| ADK compilation and fail-closed order | [ADR 006 — Compilation to ADK](006-workflow-v1-contract.md#compilation-to-adk), [Validation order](006-workflow-v1-contract.md#validation-order) | All policy/source checks finish before construction; generated helper nodes do not form another scheduler. |
+| Provider/model seam and trusted bindings | [ADR 001: Decision](001-provider-model-policy.md#decision), [Configuration ownership](001-provider-model-policy.md#configuration-ownership) | One consumer-owned resolver returns native `model.LLM`; workflows use logical aliases only. |
+| Model lifecycle/errors/conformance | [ADR 001: Lifecycle](001-provider-model-policy.md#lifecycle), [Stable errors](001-provider-model-policy.md#stable-errors), [Adapter conformance](001-provider-model-policy.md#adapter-conformance) | Run-local construction/reuse preserves native schema, tools, usage, cancellation, and streaming. |
+| Built-in tool identity and exact sets | [ADR 002: Built-in catalog](002-tool-catalog-configuration.md#built-in-catalog), [Source semantics](002-tool-catalog-configuration.md#source-semantics) | Registration grants no authority; omission or empty means no tools; every child remains inside parent authority. |
+| Tool resources, plan, and guards | [ADR 002: Resource and limit policy](002-tool-catalog-configuration.md#resource-and-limit-policy), [Effective plan](002-tool-catalog-configuration.md#effective-plan), [Invocation contract](002-tool-catalog-configuration.md#invocation-contract) | Trusted roots, commands, and resources remain hidden; categorical violations reject at compile and I/O boundaries. |
+| Future trust and remote effects | [ADR 003: Trusted-context derivation](003-trust-and-safe-outputs.md#trusted-context-derivation), [One typed safe-output contract](003-trust-and-safe-outputs.md#one-typed-safe-output-contract) | M3 owns host trust, mutation, and publication; M1 grants none of them. |
+| Event capture and portable records | [ADR 004: ADK capture](004-execution-ledger.md#adk-capture), [Portable record](004-execution-ledger.md#portable-record) | One concrete plugin projects redacted M1 ADK events; later milestones add policy and effect facts. |
+| Redaction, status, and projections | [ADR 004: Redaction and retention](004-execution-ledger.md#redaction-and-retention), [Deterministic status and outcome](004-execution-ledger.md#deterministic-status-and-outcome), [One stream, multiple projections](004-execution-ledger.md#one-stream-multiple-projections) | Thought and secrets are omitted; missing usage is absent; one fold drives the M1 result and bundle. |
+| Native delegation and child definitions | [ADR 005: Decision](005-agent-delegation.md#decision), [Declared child contract](005-agent-delegation.md#declared-child-contract), [Native modes](005-agent-delegation.md#native-modes) | Declared ADK SubAgents become per-child tools beneath the sole root chat agent; there is no aggregate delegation protocol or nested runner. |
+| Child context and authority | [ADR 005: Child context construction](005-agent-delegation.md#child-context-construction), [Authority and graph rules](005-agent-delegation.md#authority-and-graph-rules) | Only fresh or bounded snapshot context; the model cannot choose context, model, tools, workspaces, or budget. |
+| Delegation scheduling, result, and lineage | [ADR 005: Parallel and sequential behavior](005-agent-delegation.md#parallel-and-sequential-behavior), [Results and failure](005-agent-delegation.md#results-and-failure), [Lineage and evidence](005-agent-delegation.md#lineage-and-evidence) | ADK owns dispatch and function responses; TaskRunner bounds safe fan-out; native IDs establish lineage. |
+| Strict workflow syntax and schemas | [ADR 006: Strict decoding](006-workflow-v1-contract.md#strict-decoding), [Bounded schemas](006-workflow-v1-contract.md#bounded-schemas), [Portable root contract](006-workflow-v1-contract.md#portable-root-contract) | Versioned closed YAML compiles to native ADK schemas; only bounded Go templates are accepted, with no generic extras or public state keys. |
+| Agents, steps, data, and routing | [ADR 006: Named agents and native modes](006-workflow-v1-contract.md#named-agents-and-native-modes), [Steps and bindings](006-workflow-v1-contract.md#steps-and-bindings), [Routing and terminal results](006-workflow-v1-contract.md#routing-and-terminal-results) | One typed object per step; explicit ancestor paths; fail-fast all-succeeded fan-in; native ADK mode placement. |
+| Structured results, retry, limits, clarification | [ADR 006: Structured output and evidence](006-workflow-v1-contract.md#structured-output-and-evidence), [Retry, timeout, and failure](006-workflow-v1-contract.md#retry-timeout-and-failure), [Limits](006-workflow-v1-contract.md#limits), [Clarification](006-workflow-v1-contract.md#clarification) | Native OutputSchema, finish_task, and NodeConfig; terminal chat OutputKey extraction; enforceable limits; terminal awaiting-input result. |
+| ADK compilation and fail-closed order | [ADR 006: Compilation to ADK](006-workflow-v1-contract.md#compilation-to-adk), [Validation order](006-workflow-v1-contract.md#validation-order) | All policy and source checks finish before construction; generated helper nodes do not form another scheduler. |
 
 ## Removed complexity
 
@@ -102,7 +101,7 @@ The revised design removes or defers:
 - hard aggregate-token claims without a tokenizer/counting contract;
 - custom skill parser, HITL/resume protocol, artifact store, session store, and OTLP exporter.
 
-Security-critical trust, redaction, path/process/Git guards, staged publication, and zero-call rejection tests remain.
+M1 retains redaction, path/process/read-only Git guards, and zero-call rejection tests. Security-critical host trust and staged publication remain accepted M3 work.
 
 ## ADK v2.2.0 dependencies
 
@@ -117,7 +116,7 @@ The architecture relies on public v2.2 behavior that must be pinned by determini
 - `skilltoolset` restricted sources;
 - ADK session/artifact services.
 
-The current `go.mod` remains on v2.0.0 during this design plan. Upgrading to v2.2.0 is the first M1 implementation prerequisite; implementation cannot claim the revised behavior before that upgrade and conformance suite pass.
+The shipped M1 implementation selects ADK v2.2.0 and pins the required public behavior with deterministic conformance tests.
 
 ADK internals document a known caveat around synthetic single-turn input. Duto depends only on public behavior and captures regressions through model-request/event tests.
 
@@ -212,9 +211,7 @@ Previously accepted durability decisions covering ADK resume boundaries, protect
 
 ## Verification
 
-The accepted revision passed deterministic build, test, integration, Markdown-link, YAML-example, scenario-set, provider-neutrality, and stale-contract checks. Review covered completeness, correctness, safety, and documentation quality.
-
-The CLI-first command, tool-profile, prompt/result, and milestone contracts were accepted on 2026-08-26. Implementation remains outside this ADR.
+The CLI-first command, tool-profile, prompt/result, and milestone contracts were accepted on 2026-08-26. M1 is implemented in the current codebase and covered by build, unit, integration, scenario, CLI process, strict-decode, ADK conformance, and security-boundary tests. M2, M3, and durable hosting remain outside this ADR's implemented scope.
 
 ## Consequences
 

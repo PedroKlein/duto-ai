@@ -1,15 +1,19 @@
 # ADR 001: Provider and model policy
 
-- **Status:** Proposed revision
+- **Status:** Accepted; M1 implementation shipped
 - **Date:** 2026-08-25
 - **ADK baseline:** `google.golang.org/adk/v2` v2.2.0 (`b264039aaec43baedc123e5b9a0cf87681d0bbca`)
 - **Scope:** Trusted model bindings, portable aliases, the compiler seam, lifecycle, errors, and adapter conformance
+
+## M1 implementation amendment
+
+The shipped composition root implements the consumer-owned resolver, strict aliases, standard generation fields, and run-local model reuse. It currently normalizes timeout behavior used by native retry. The broader provider error taxonomy and public multi-adapter conformance surface remain contract guidance for future adapters, not additional shipped CLI behavior.
 
 ## Context
 
 Workflows must be portable while provider credentials, endpoints, and concrete model targets remain trusted runtime data. Duto already executes through ADK `model.LLM`; duplicating that protocol would add no useful seam.
 
-The current implementation also accepts an unmapped workflow model string as a concrete target and parses provider-specific `extra` values without forwarding them. V1 removes both ambiguous behaviors.
+The superseded implementation accepted an unmapped workflow model string as a concrete target and parsed provider-specific extras without forwarding them. V1 removes both ambiguous behaviors.
 
 ## Decision drivers
 
@@ -160,29 +164,11 @@ Every bundled adapter must pass one ADK-level suite:
 
 Provider capability differences are handled by conformance and preflight, not by exposing provider details to workflows.
 
-## Migration from v0.2
+## M1 implementation
 
-| v0.2 behavior | V1 behavior |
-|---|---|
-| One provider block | Named trusted provider binding |
-| `models.<alias>: <target>` | Trusted alias record with provider and target |
-| Default or step alias | Same logical alias after strict validation |
-| Unknown alias passed through | Rejected with an actionable alias diagnostic |
-| `temperature` | Standard request field |
-| `max_tokens` | Renamed `max_output_tokens` |
-| Parsed-but-ignored `extra` | Rejected; provider-specific values remain trusted-only |
-| Target-keyed global behavior | Optional run-local reuse by validated alias |
+The shipped composition root supports one bundled adapter behind the private resolver. Strict admission requires every workflow alias to map to a trusted provider and target before construction. Runtime instances are cached by alias for one invocation only.
 
-The duto-test repository has exactly two observed aliases, `light` and `medium`. All 18 current scenarios use only those aliases:
-
-| Scenarios | Aliases | Migration |
-|---|---|---|
-| `iteration-limits`, `output-chain`, `retry-transient`, `shell-exec`, `template-prompt-file`, `template-variables` | `light` | Mechanical alias validation |
-| `agent-skills`, `context-files`, `file-exploration`, `full-pipeline`, `git-history`, `multi-model`, `no-tools`, `parallel-fan-in`, `prompt-from-file`, `skills-injection`, `system-prompt`, `web-fetch` | `light`, `medium` | Mechanical alias validation |
-
-`full-pipeline`, `multi-model`, and `no-tools` retain standard generation overrides. No current scenario requires provider-specific workflow extras.
-
-Compatibility conversion is a source-to-source aid. It emits v1 or an actionable error; it does not preserve concrete-name pass-through or silently ignored fields.
+The portable model configuration is limited to `temperature` and `max_output_tokens`. Unknown aliases and provider-specific workflow fields reject; there is no compatibility conversion or concrete-target pass-through.
 
 ## Rejected alternatives
 

@@ -1,227 +1,245 @@
 # duto-ai
 
-A CLI and runtime for bounded AI workflow DAGs.
+`duto-ai` is a CLI and runtime for bounded, typed AI workflow DAGs. It strictly decodes a trusted runtime configuration and a portable workflow, compiles an immutable effective plan, and executes that plan with [ADK Go v2](https://github.com/google/adk-go).
 
-`duto-ai` validates and compiles a YAML workflow into an [ADK Go v2](https://github.com/google/adk-go) execution graph. Humans, coding agents, planners, and CI jobs can produce workflows; duto executes the resulting finite, inspectable plan and returns structured results.
+The local CLI is the shipped M1 interface. A one-shot GitHub Action adapter is M2. Workspace or Git mutation and remote publication are M3. Durable pause/resume, cross-runner recovery, and asynchronous reply correlation are future hosting work.
 
-Local CLI execution is the primary interface. GitHub Actions is an official first-class host adapter over the same host-neutral runtime, not a separate workflow model.
+## Build and inspect a workflow
 
-Current release: **v0.2.2**
-
-## What works today
-
-- Sequential and parallel DAG execution through `steps` and `needs`
-- An isolated ADK agent for each step
-- Per-step model selection and generation settings
-- Explicit tool whitelists with namespace globs
-- Prompt files, context files, skills, and template variables
-- Retry, timeout, and iteration limits
-- Text, JSON, Markdown, file, and GitHub step-summary output
-- GitHub Action and local CLI execution
-- One bundled model-provider adapter
-
-Provider registration, custom tools, typed outputs, and additional provider adapters are not public extension points in v0.2.2.
-
-## Accepted CLI-first contract
-
-The next contract makes local one-shot use primary. Its exact command form is `duto-ai validate|plan|run [--config FILE] [--format text|json] WORKFLOW|-`; `-` reads workflow YAML from stdin.
+Build the binary:
 
 ```bash
-duto-ai validate --config duto.yaml workflows/review.yaml
-duto-ai plan --format json --config duto.yaml workflows/review.yaml > plan.json
-duto-ai run --format json --config duto.yaml workflows/review.yaml > result.json
+mise install
+go build -o ./bin/duto-ai ./cmd/duto-ai
 ```
 
-Each command emits one payload on stdout and sends logs or incidental diagnostics to stderr. `run` validates internally and uses fresh in-memory services by default. GitHub Actions will invoke the same JSON contract as the M2 host adapter; workspace/Git mutation and trusted publication belong to M3. Durable pause/resume and recovery are future-host capabilities, not M1 dependencies.
-
-The accepted portable contract uses logical model aliases and provider-neutral workflow YAML. Trusted runtime configuration binds those aliases to a configured adapter; for example:
+Create `duto.yaml`:
 
 ```yaml
-provider:
-  type: custom-provider
-  config:
-    endpoint: ${DUTO_PROVIDER_ENDPOINT}
-    credential: ${DUTO_PROVIDER_CREDENTIAL}
+version: 1
+providers:
+  default:
+    type: custom-provider
+    config: {}
 models:
-  light: example-small-model
-  capable: example-capable-model
+  light:
+    provider: default
+    target: example-model
 ```
 
-The accepted workflow, tool-profile, prompt/result, and milestone details are recorded in [ADRs 006–008](docs/adr/006-workflow-v1-contract.md).
-
-## Current v0.2.2 quick start
-
-The remainder of this section describes shipped v0.2.2 behavior, not the accepted next contract.
-
-### 1. Define a workflow
-
-Create `.github/ai-workflows/pr-review.yaml`:
+Create `workflow.yaml`:
 
 ```yaml
-name: PR review
-
+version: 1
+name: example
+model: light
+tools: []
+limits:
+  timeout: 1m
+  max_iterations: 2
+  max_model_calls: 2
+  max_tool_calls: 0
+  max_concurrency: 1
+  max_parallel_calls: 1
+  max_artifact_bytes: 0
 steps:
-  - id: gather
-    model: light
-    tools:
-      - github.read-pr
-      - github.read-diff
-      - github.list-changed-files
-    prompt: |
-      Read the pull request and summarize the change.
-    output: context
-
-  - id: review
-    needs: [gather]
-    model: medium
-    tools: []
-    prompt: |
-      Review the preceding step output for correctness and security issues.
-    output: findings
-
   - id: report
-    needs: [review]
-    tools:
-      - github.post-review
-    prompt: |
-      Post the findings as a pull request review.
+    needs: []
+    instruction: Return a typed report.
+    tools: []
+    workspaces: []
+    input:
+      type: object
+      properties: {}
+      required: []
+    with: {}
+    output:
+      type: object
+      properties:
+        outcome: {type: string, enum: [completed]}
+        report: {type: string, max_length: 1024}
+      required: [outcome, report]
+result: {step: report}
 ```
 
-ADK passes predecessor output to successor steps. In v0.2.2, `output` enables step output storage, but its value is not yet a user-addressable output name.
+Validate and inspect the effective plan:
 
-### 2. Run it from GitHub Actions
-
-Create `.github/workflows/ai-review.yaml`:
-
-```yaml
-name: AI review
-
-on:
-  pull_request:
-    types: [opened, synchronize]
-
-permissions:
-  contents: read
-  pull-requests: write
-
-jobs:
-  review:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: PedroKlein/duto-ai@v0.2.2
-        with:
-          workflow: .github/ai-workflows/pr-review.yaml
-          config: .github/ai-workflows/config.yaml
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DUTO_PROVIDER_ENDPOINT: ${{ secrets.DUTO_PROVIDER_ENDPOINT }}
-          DUTO_PROVIDER_CREDENTIAL: ${{ secrets.DUTO_PROVIDER_CREDENTIAL }}
+```bash
+./bin/duto-ai validate --config duto.yaml workflow.yaml
+./bin/duto-ai plan --format json --config duto.yaml workflow.yaml > plan.json
 ```
 
-Pin the Action to an exact release. The repository does not currently publish a moving `v0` tag.
+The placeholder provider binding is enough for `validate` and `plan`, which do not construct a provider. Before `run`, replace it with a trusted configuration supported by the binary. Provider credentials, endpoints, and concrete model targets belong in `duto.yaml`, never in portable workflow YAML.
 
-## Current v0.2.2 CLI
+Run a workflow that declares no runtime inputs:
 
-The shipped release currently exposes:
+```bash
+./bin/duto-ai run --format json --config duto.yaml workflow.yaml > result.json
+```
+
+## CLI reference
 
 ```text
-duto-ai run [flags] workflow.yaml
+duto-ai validate [--config FILE] [--format text|json] WORKFLOW|-
+duto-ai plan     [--config FILE] [--format text|json] WORKFLOW|-
+duto-ai run      [--config FILE] [--format text|json] WORKFLOW|-
 duto-ai version
 ```
 
-Its legacy validation path is the `run` command's dry-run flag. The accepted replacement is the separate `validate`, `plan`, and one-shot `run` surface shown above.
+`--config` defaults to `duto.yaml`. `--format` defaults to `text`. A workflow path of `-` reads one YAML document from stdin.
 
-Important shipped `run` flags:
+Each operation writes exactly one payload followed by a newline to stdout. Diagnostics go to stderr.
 
-| Flag | Default | Description |
+- `validate` emits `valid` or `{"version":1,"valid":true}`.
+- `plan` emits the complete effective plan as pretty or compact JSON. The plan includes frozen instruction and skill content, so protect it according to the source material.
+- `run` emits a pretty or compact typed result object.
+
+Exit codes are stable:
+
+| Code | Meaning |
+|---:|---|
+| `0` | Success |
+| `1` | Unexpected internal error |
+| `2` | Command usage error |
+| `3` | Configuration, workflow, or admission error |
+| `4` | Execution failure or incomplete execution |
+| `130` | Cancellation |
+
+### Runtime-input limitation
+
+The v1 workflow format can declare typed top-level `inputs`, and the runtime API accepts input values. The shipped CLI has no input flag or input document. `validate` and `plan` accept workflows that declare inputs, but `run` rejects any workflow with a non-empty top-level `inputs` map before provider construction. M2 will map trusted host data to those declared inputs.
+
+## Trusted configuration reference
+
+The trusted configuration is a strict `version: 1` YAML document. Its root fields are:
+
+| Field | Required | Value |
 |---|---:|---|
-| `--config` | `.github/ai-workflows/config.yaml` | Global configuration path |
-| `--repo` | environment | Repository override in `owner/repo` form |
-| `--pr` | environment | Pull request number override |
-| `--event` | environment | Event JSON file override |
-| `--dry-run` | `false` | Validate and print the execution plan |
-| `--log-level` | `info` | `debug`, `info`, `warn`, or `error` |
-| `--verbose` | `false` | Enable debug logging |
-| `--output-format` | `text` | `text`, `json`, or `markdown` |
-| `--output-file` | empty | Also write formatted output to a file |
+| `version` | yes | Integer `1` |
+| `providers` | yes | Map of provider alias to `{type, config}` |
+| `models` | yes | Map of model alias to `{provider, target}` |
+| `workspaces` | no | Map of symbolic name to `{root, access}`; M1 accepts `access: read` |
+| `tool_profiles` | no | Map of profile name to a flat selector list |
+| `tools` | no | Trusted tool ceiling as a selector list; omission means an empty ceiling |
+| `tool_limits` | no | Exact tool-name map of hard limits |
+| `tool_config` | no | Closed trusted bindings for selected tool families |
+| `evidence` | no | `{directory}` for an optional one-shot evidence bundle |
 
-## Current v0.2.2 workflow fields
+A `tool_limits` entry accepts `max_calls`, `timeout`, `max_request_bytes`, and `max_result_bytes`. Every selected tool must have a positive trusted limit. Portable workflow and child limits may narrow this record but cannot widen it.
 
-| Field | Required | Description |
-|---|---:|---|
-| `name` | yes | Workflow name |
-| `steps` | yes | One or more workflow steps |
-| `steps[].id` | yes | Unique step ID |
-| `steps[].needs` | no | Predecessor step IDs |
-| `steps[].model` | no | Model alias or model name |
-| `steps[].model_config` | no | `temperature` and `max_tokens` overrides |
-| `steps[].tools` | no | Tools added to defaults; `[]` disables all tools |
-| `steps[].skills` | no | Skill names or Markdown file paths |
-| `steps[].system` | no | Additional system instruction |
-| `steps[].prompt` | yes | Inline prompt or `.md`/`.txt` path |
-| `steps[].output` | no | Enables output storage for the step |
-| `steps[].max_iterations` | no | Agent-loop limit; default `25` |
-| `steps[].timeout` | no | Step timeout; default `300s` |
-| `steps[].retry` | no | Transient-error retry settings |
+`tool_config` has these closed family records:
 
-Known v0.2.2 contract limits:
+- `files`: `workspace`
+- `git`: `workspace`, `refs`, `allow_working_tree`, `max_log_count`
+- `github`: `base_url`, optional `token`, `owner`, `repository`, `subject`, `ref`, `max_pages`, `max_results`
+- `web`: `allowed_domains`, `max_redirects`
+- `shell`: absolute `executable`, fixed `args`, `workspace`, `environment`, `max_stdout_bytes`, `max_stderr_bytes`
 
-- The workflow-level `config` field is parsed but the CLI or Action config path controls the loaded file.
-- `model_config.extra` is parsed but not forwarded to the provider.
-- Output values are strings, and declared output names are not available to templates.
-- Unknown tool names and unmatched globs are currently ignored.
+Trusted provider, workspace, evidence, GitHub, web, and shell scalar values may expand environment variables after structural decoding. Expanded secret values are not copied into plan output or diagnostics. Portable workflows never expand environment variables.
 
-## Tool catalog
+## Portable workflow reference
 
-The lists below are the shipped v0.2.2 compatibility names. They are not aliases for the accepted M1 catalog.
+A workflow is a strict `version: 1` YAML document. Required root fields are `version`, `name`, `model`, `limits`, `steps`, and `result`. Optional root fields are `description`, `inputs`, `model_config`, `tool_profiles`, `tools`, `tool_limits`, `skills`, and `agents`.
 
-### GitHub
+Unknown fields, duplicate keys, aliases, anchors, merge keys, explicit nulls, unsupported tags, invalid UTF-8, scalar coercion, numeric overflow, and multiple documents are rejected. Diagnostics include the file, line, column, field path, and stable error code.
 
-- Read: `github.read-issue`, `github.read-pr`, `github.read-diff`, `github.list-changed-files`, `github.read-comments`, `github.read-reviews`, `github.read-checks`, `github.search-issues`
-- Write: `github.post-review`, `github.post-comment`, `github.add-labels`, `github.create-issue`, `github.edit-issue`, `github.merge-pr`, `github.request-reviewers`
+### Types and graph
 
-### Repository files and history
+Supported schema types are `object`, `array`, `string`, `integer`, `number`, and `boolean`. Objects are closed. Arrays require `items` and `max_items`; unconstrained strings require `max_length`. Every step or agent output is an object with a required finite `outcome` enum.
 
-- `files.read`, `files.find`, `files.grep`
-- `git.log`, `git.blame`, `git.show`, `git.diff`
+An inline step accepts:
 
-### Process and network
+- required `id`, `instruction`, `input`, `with`, and `output`;
+- optional `needs`, `wait`, `when`, `model`, `model_config`, `tools`, `tool_limits`, `skills`, `workspaces`, `retry`, and `limits`.
 
-- `shell.run`
-- `web.fetch`, `web.request`
+A named-agent step accepts `id`, optional `needs`, `wait`, and `when`, plus required `agent` and `with`. It cannot override the selected agent.
 
-The accepted M1 replacement uses these exact names:
+`needs` defines a static acyclic graph. Fan-in uses `wait: all_succeeded` and builds inputs in source order. A `with` binding is exactly one of a workflow input, an ancestor output property path, or a scalar literal. There is no expression language, implicit predecessor map, or public ADK state key.
+
+`result` is either `{step: terminal-step}` or an exhaustive list of routes keyed by a terminal step and one of its declared outcomes. `awaiting_input` is an ordinary successful domain outcome; it does not pause or resume the run.
+
+### Limits and retry
+
+The workflow `limits` record contains:
+
+- `timeout`
+- `max_iterations`
+- `max_model_calls`
+- `max_tool_calls`
+- `max_concurrency`
+- `max_parallel_calls`
+- `max_artifact_bytes`
+
+All required workflow values must be finite; model, tool, step, and agent scopes can only narrow inherited ceilings. Retry uses `max_attempts`, `initial_delay`, and `max_delay`. Process-capable steps cannot use automatic retry, and unsafe work cannot overlap another graph branch.
+
+## Tools and authority
+
+M1 has this catalog:
 
 - Files: `files.read`, `files.find`, `files.grep`
 - Git: `git.read.log`, `git.read.blame`, `git.read.show`, `git.read.diff`
 - GitHub: `github.read.issue`, `github.read.pr`, `github.read.diff`, `github.read.changed-files`, `github.read.comments`, `github.read.reviews`, `github.read.checks`, `github.read.search-issues`
-- Process and network: `shell.run`, `web.fetch`
+- Network: `web.fetch`
+- Process: `shell.run`
 
-M1 includes no GitHub write tool or arbitrary-method web request. Portable selectors may be exact names or the allowed terminal namespace wildcards `files.*`, `git.read.*`, and `github.read.*`. The broader `git.*`, `github.*`, and global `*` selectors reject with status 3 and zero model/tool calls. Trusted ceilings and parent authority can only narrow the resulting set. Step outputs and the terminal workflow result are typed.
+Portable selectors may use an exact name or one of the terminal namespace wildcards `files.*`, `git.read.*`, and `github.read.*`. Broader or global wildcards reject.
 
-## Security model
+A tool scope is either an array or a closed expression with `from`, `add_profiles`, `add`, `remove_profiles`, and `remove`. Profiles are flat selector lists. Trusted and workflow profile names must not collide. Expansion is deterministic and final names use catalog byte order.
 
-Tool whitelisting limits what the model can call. It is not an operating-system sandbox. The first bullets describe the accepted target contract; shipped v0.2.2 does not yet implement all of these guards.
+Omitted tools, `tools: []`, and an empty expression expose no direct tools. Inheritance requires `from: parent`. The trusted configuration is the outer ceiling, workflow tools are the parent for top-level steps and agents, and each child must be a subset of its parent. Registration never grants authority.
 
-- Accepted M1 `shell.run` is opt-in compatibility authority bounded by trusted command, workspace, environment, time, output, and call ceilings; it is not a sandbox.
-- Accepted M1 `web.fetch` can access only locations admitted by trusted network policy; the shipped v0.2.2 `web.request` surface is not part of M1.
-- Local callers may use GitHub read/review tools through trusted bindings; the invocation host does not own the tool.
-- File/Git/GitHub mutation and trusted publication are M3 capabilities and are not granted merely by a token being present.
-- Workflow files and enabled capabilities must be treated according to their trust context.
-- With shipped v0.2.2, do not expose write, network, or shell tools to workflows originating from untrusted pull requests.
+Selected families also require their trusted `tool_config` binding. File, Git, GitHub, network, and process handlers repeat resource and byte checks at the I/O boundary. `shell.run` takes no model-selected command: it executes the exact absolute executable and arguments from trusted configuration with a closed environment, workspace, deadline, call count, and output bounds. It is not a sandbox.
 
-Grant the job only the GitHub permissions required by its selected tools. See [SECURITY.md](SECURITY.md) for reporting and deployment guidance.
+M1 has no file or Git mutation, GitHub mutation or publication, arbitrary-method web request, tool plugin registry, or portable provider registry.
 
-## Action inputs and outputs
+## Instructions, templates, and skills
 
-The composite Action supports Linux and macOS runners on AMD64 and ARM64.
+`instruction` accepts exactly one of:
 
-Inputs: `workflow`, `config`, `log-level`, `output-format`, `output-file`, `verbose`, and `version`.
+- a scalar or `{text: string}` literal;
+- `{file: {workspace, path, max_bytes}}`;
+- `{template: {text, max_output_bytes}}`;
+- `{template: {file: {workspace, path, max_bytes}, max_output_bytes}}`.
 
-Outputs: `status`, `workflow`, `duration-ms`, and `failed-step`.
+Files must be regular UTF-8 files beneath an admitted read workspace. Admission freezes file and template bytes into the effective plan. Traversal, symlink escape, invalid templates, unavailable data, and source or rendered-size overflow fail closed.
 
-The Action downloads the requested release into `RUNNER_TEMP`, verifies it against `checksums.txt`, and adds the versioned directory to `GITHUB_PATH`.
+Templates use bounded Go `text/template` with a fixed data object: `.Workflow`, `.Step`, `.Predecessors`, and `.Runtime`. They cannot read environment variables, secrets, host events, arbitrary files, clocks, or session state.
+
+Top-level `skills` maps names to `{workspace, path}`. An agent or inline step selects exact names. Each skill must have a matching `SKILL.md`; only bounded regular UTF-8 files under `references`, `assets`, and `scripts` are exposed through ADK's native skill toolset. Skill metadata cannot widen tool authority.
+
+## Named agents and subagents
+
+Named agents use `single_turn`, `task`, or `chat` mode with fixed model, instruction, schemas, tools, workspaces, skills, context, limits, and declared `subagents`. Context is either `fresh` or a bounded `snapshot` of declared workflow inputs and files.
+
+The current native ADK integration has an important placement limit: a subagent tree is executable only from a `chat` named agent used by the workflow's sole root and terminal step. A `task` agent can be a declared child but not a static workflow step. A `single_turn` named agent can be a static step only when it has no children. Snapshot references to ancestor outputs are decoded but rejected by admission for the root-chat path because no ancestor exists there.
+
+Each child remains inside its parent's model, tool, workspace, and limit envelope. The model sees one native tool per declared child and cannot choose a different child configuration. There is no aggregate delegation tool, nested runner, persistent child conversation, or model-created graph.
+
+## Results and evidence
+
+A successful `run` result contains `version`, an opaque one-shot `run_id`, `workflow`, execution `status`, domain `outcome`, timestamps, ordered step results, terminal `output`, optional reported usage, and normalized error kinds. Text output is pretty JSON; JSON output is compact JSON. Missing usage stays absent.
+
+Every invocation uses fresh in-memory ADK session and artifact services. The runner consumes the full event stream. Raw model reasoning, prompts, provider targets, credentials, and raw tool arguments or results are not written to the evidence event stream.
+
+When `evidence.directory` is non-empty, `run` atomically creates a new directory containing:
+
+```text
+events.jsonl
+result.json
+summary.md
+manifest.json
+```
+
+The manifest is written last and includes the plan digest plus file sizes and SHA-256 digests. The target directory must not already exist. This bundle records one execution; it is not a durable session, checkpoint, or replay store.
+
+## Delivery boundaries
+
+| Milestone | Scope |
+|---|---|
+| M1, shipped | Local `validate`, `plan`, and one-shot `run`; strict v1 documents; bounded typed DAGs; read/process tools; native finite subagents; typed results and evidence |
+| M2 | Official one-shot GitHub Action mapping trusted host inputs to the same CLI contract, then projecting summaries, outputs, and artifacts |
+| M3 | Admitted workspace and Git mutation, staged safe outputs, and trusted publication |
+| Future durable hosting | Persistent pause/resume, encrypted host state, cross-runner recovery, lifecycle reconciliation, and asynchronous replies |
 
 ## Development
 
@@ -229,9 +247,10 @@ The Action downloads the requested release into `RUNNER_TEMP`, verifies it again
 mise install
 mise run check
 mise run integration
+mise run scenarios
 ```
 
-See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the complete command list and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for implementation details.
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for contributor commands, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for runtime design, and [docs/adr/006-workflow-v1-contract.md](docs/adr/006-workflow-v1-contract.md) for the full workflow contract.
 
 ## License
 

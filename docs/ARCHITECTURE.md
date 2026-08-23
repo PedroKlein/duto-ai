@@ -1,160 +1,162 @@
 # Architecture
 
-This document explains the v0.2.2 implementation. It describes shipped behavior, not the deferred extensibility roadmap.
+This document explains the shipped CLI-first M1 runtime. [ADR 008](adr/008-product-center-and-delivery-layers.md) defines the product boundary and later delivery layers.
 
-## Product center
+## Product boundary
 
-Duto is a host-neutral CLI and runtime for bounded AI workflow DAGs. A human, coding agent, planner, or CI job may produce a workflow; duto validates the finite graph, compiles it to ADK Go, executes it, and returns structured results.
+Duto validates, inspects, and executes a finite typed workflow. Workflow generation, open-ended planning, backlog management, and dynamic graph expansion belong to callers.
 
-Local CLI execution is the primary path. GitHub Actions is an official host adapter over the same runtime. Host adapters own triggers, checkout, credentials, event mapping, and result publication; portable workflow YAML does not depend on GitHub.
-
-Open-ended planning remains outside the runtime. A planner may emit a complete duto workflow, but duto does not initially maintain a backlog, rewrite its own graph, or create arbitrary runtime agents. See [ADR 008](adr/008-product-center-and-delivery-layers.md).
-
-## System boundary
-
-duto-ai is a process-level runtime. The surrounding caller owns triggers, checkout, secrets, token permissions, and runner isolation.
+The core is host-neutral. M1 is a local process interface. A GitHub Action adapter is M2, not part of the current runtime. Mutation and publication are M3. Durable sessions and cross-runner recovery remain future work.
 
 ```text
-local user, agent, planner, or host adapter
-  -> duto-ai validate / plan / run
-     -> load trusted config and portable workflow YAML
-     -> validate and compile one immutable effective plan
-     -> validate: emit diagnostics only
-     -> plan: emit the complete redacted plan only
-     -> run: execute one ADK runner with fresh in-memory services
-     -> emit one typed result and redacted evidence
+caller
+  -> duto-ai validate | plan | run
+     -> strict trusted-config decode
+     -> strict portable-workflow decode
+     -> pure effective-plan compilation
+     -> validate: one validity payload
+     -> plan: one normalized plan payload
+     -> run: late provider and tool construction
+        -> native ADK graph and runner
+        -> typed terminal result
+        -> optional redacted one-shot evidence bundle
 ```
 
-M1 does not publish side effects. The M2 Action adapter maps host inputs and projects the same one-shot result. M3 adds staged safe outputs and trusted publication.
+Admission completes before provider, model, tool handler, client, process, agent, or ADK node construction. This makes invalid configuration a zero-call failure.
 
-The CLI can run anywhere its binary and provider credentials are available. The packaged composite Action currently supports Linux and macOS runners on AMD64 and ARM64.
+## Command boundary
 
-## Modules
+`cmd/duto-ai` is the composition root. Cobra exposes `validate`, `plan`, `run`, and `version`.
 
-The module descriptions below distinguish shipped v0.2.2 behavior from the accepted CLI-first target. Accepted target semantics are canonical in ADRs 001–008 and must not be presented as shipped until implemented.
+All three operation commands accept one workflow file or `-` for stdin, `--config FILE`, and `--format text|json`. They write one payload to stdout and diagnostics to stderr. The command maps usage, admission, execution, cancellation, and internal failures to distinct exit codes.
 
-### `internal/config`
+The composition root also owns the bundled provider adapter and concrete run-scoped tool construction. Core packages receive narrow model and toolset resolver functions; they do not read provider credentials or construct host clients.
 
-Defines and loads the global configuration and workflow schema. Environment variables are expanded before global configuration parsing. Workflow validation covers empty workflows, duplicate IDs, missing dependencies, cycles, timeouts, and iteration limits.
+The CLI does not accept workflow input values. It can validate and plan a workflow with declared root inputs, but `run` rejects that workflow before provider construction. The runtime package itself supports a typed input map for host adapters and tests.
 
-Model aliases map user-facing names to provider model names.
+## Strict source documents
 
-Known limitation: unknown YAML fields, unknown tools, and unmatched tool globs are not strict validation errors in v0.2.2.
+`internal/config` decodes both YAML documents through `yaml.Node`. It rejects unknown fields at every level, duplicate keys, aliases, anchors, merges, explicit null, unsupported tags, invalid UTF-8, scalar coercion, overflow, and multiple documents.
 
-### `internal/compiler`
+The trusted document owns provider bindings, concrete model targets, workspace roots, the tool ceiling, tool-family bindings, hard tool limits, and the optional evidence directory. Environment expansion occurs only in selected trusted scalar fields after structural decoding.
 
-Transforms validated steps into ADK nodes and edges.
+The portable document owns logical model aliases, bounded instructions and skills, static typed graph structure, exact tool and workspace subsets, retry, limits, and terminal result selection. Portable text is never environment-expanded.
 
-| Workflow field | ADK behavior |
+Source diagnostics contain file, line, column, field path, and a stable code. Secret values are not part of those diagnostics.
+
+## Effective plan
+
+`internal/plan` compiles the two decoded documents without constructing execution resources. The result is copied through deterministic JSON and exposed through immutable snapshots.
+
+The plan contains:
+
+- logical model aliases and provider-neutral generation settings;
+- closed workflow, step, and agent schemas;
+- typed bindings and source-ordered dependencies;
+- normalized instructions, frozen file or skill bytes, and SHA-256 digests;
+- exact tool names, profile expansion, capabilities, side-effect classes, parent authority, and narrowed limits;
+- finite workflow, agent, step, retry, concurrency, and artifact-byte limits;
+- direct or routed terminal-result coverage;
+- a digest over the normalized plan.
+
+The plan omits provider configuration values, credentials, concrete model targets, and concrete workspace roots. It does contain admitted instruction and skill source content, so a saved plan must be protected like that source material.
+
+## Graph and typed data
+
+`internal/compiler` converts an effective plan into native ADK agents and workflow nodes.
+
+Each ordinary step uses an ADK `llmagent` inside an `AgentNode`. Small generated function nodes construct typed input objects and terminal results. `needs` produces static edges, and multiple dependencies use native all-succeeded fan-in. `workflow.WithMaxConcurrency` applies the admitted graph concurrency bound.
+
+A step input is assembled only from declared workflow inputs, scalar literals, and typed ancestor output paths. Runtime values are validated against compiled schemas without coercion. Step output is a closed object with a required finite `outcome` enum. The direct result or exhaustive route set selects exactly one terminal output.
+
+Unhandled node errors fail fast. Expected absence is data, represented by a successful domain outcome such as `unavailable` or `awaiting_input`. A successful `awaiting_input` result ends the invocation; M1 does not pause it.
+
+## Prompts and skills
+
+`internal/prompt` admits literal, file, template, and template-file instructions. File access uses an admitted symbolic read workspace. Regular-file, traversal, symlink, UTF-8, source-size, template-operation, and rendered-size checks happen before a model receives text.
+
+Admission freezes prompt and skill bytes. Execution renders templates against the closed `.Workflow`, `.Step`, `.Predecessors`, and `.Runtime` object. No environment, host event, credential, clock, memory, or arbitrary file lookup is available to a template.
+
+Selected skills are frozen from an admitted workspace and exposed through ADK's `skilltoolset` using a restricted source. Only the selected `SKILL.md` and bounded resources under `references`, `assets`, and `scripts` are visible. Skill metadata is instruction, not authority.
+
+## Tools and authority
+
+`internal/tool` contains a fixed M1 catalog. Catalog registration describes availability; plan compilation grants authority.
+
+The policy compiler resolves flat profiles and exact selectors. It permits exact names plus `files.*`, `git.read.*`, and `github.read.*`. The trusted ceiling bounds the workflow. Named agents and steps are exact subsets of their parent scope, with explicit `from: parent` inheritance only.
+
+Each selected tool has one trusted hard limit and may have narrower workflow, agent, or step limits. A common ADK guard atomically debits attempts and applies the earliest deadline. Family handlers repeat resource, request, and result checks at the I/O boundary.
+
+Family behavior is deliberately narrow:
+
+- file tools read, find, or grep beneath one trusted read workspace;
+- Git tools run fixed read-only operations against trusted refs and workspace policy;
+- GitHub tools read runtime-bound repository or review data from one trusted endpoint and subject;
+- `web.fetch` uses an HTTPS domain allowlist and bounded redirects;
+- `shell.run` executes one exact trusted executable and fixed argument list with a closed environment and bounded output.
+
+The process tool is not a sandbox. Process-capable work cannot be retried automatically or overlap another graph branch. M1 has no mutation or publication tool.
+
+## Native subagents
+
+Named agents compile to ADK `llmagent` values with `single_turn`, `task`, or `chat` mode. A declared child becomes a native model-callable tool. ADK owns dispatch, task completion, function responses, cancellation, and event lineage.
+
+The current compiler admits a child tree only beneath a named `chat` agent used as the workflow's sole root and terminal step. This is an ADK root-placement constraint in the shipped integration:
+
+- a root chat step has no predecessors and no downstream step;
+- a `task` agent is a child, never a static graph step;
+- a static `single_turn` named agent cannot declare children;
+- snapshot context for this path may include declared workflow inputs and admitted files, but not ancestor outputs.
+
+Child tool, workspace, model, depth, call, byte, and parallel limits are compiled as subsets of parent authority. Read-only single-turn child calls may use the bounded ADK task runner. Task children and unsafe work are sequential. Runs do not share child transcripts, state, artifacts, or memory.
+
+## Runtime and evidence
+
+`internal/runtime` validates input values, compiles the ADK graph, creates a fresh random run ID, and constructs a fresh ADK runner with in-memory session and artifact services. No memory service or durable store is installed. The runtime consumes the complete event iterator.
+
+A concrete runner plugin projects bounded evidence. It keeps safe invocation, event, node, function-call correlation, output digest, status, and optional usage facts. It omits private thought, raw content, raw prompts, raw tool arguments and results, credentials, provider targets, and concrete model targets.
+
+The result has one execution status and one independent domain outcome. It contains ordered step summaries, typed outputs, optional reported usage, normalized error kinds, and timestamps. Missing usage remains absent.
+
+If trusted configuration sets `evidence.directory`, the runtime creates a new bundle atomically:
+
+```text
+events.jsonl
+result.json
+summary.md
+manifest.json
+```
+
+`manifest.json` is written last and binds file sizes and SHA-256 digests to the plan and run. The directory cannot already exist. Evidence is one-shot diagnostic output, not a session checkpoint or replay protocol.
+
+## Package responsibilities
+
+| Package | Responsibility |
 |---|---|
-| step | `AgentNode` wrapping a `llmagent` |
-| `needs` | directed edge from predecessor to successor |
-| multiple `needs` | ADK fan-in handling |
-| no `needs` | edge from workflow start |
-| `model` | model resolver lookup |
-| `tools` | per-step ADK toolset |
-| `max_iterations` | before-model iteration limiter |
-| `timeout` | node timeout |
-| `retry` | node retry configuration |
-| `output` present | ADK `OutputKey` at `steps.<id>.output` |
+| `cmd/duto-ai` | CLI contract, exit mapping, provider and tool wiring |
+| `internal/config` | Strict trusted and portable YAML decoding |
+| `internal/plan` | Pure normalization, policy admission, graph checks, deterministic plan |
+| `internal/prompt` | Bounded prompt/template admission and restricted skills |
+| `internal/compiler` | Effective plan to native ADK agents and workflow nodes |
+| `internal/runtime` | Fresh-run execution, event folding, typed result, evidence bundle |
+| `internal/tool` | Fixed catalog, selectors, guards, and ADK toolset adapter |
+| `internal/tool/files` | Bounded workspace reads |
+| `internal/tool/git` | Bounded read-only Git operations |
+| `internal/tool/github` | Bounded GitHub reads |
+| `internal/tool/web` | Bounded HTTPS fetch |
+| `internal/tool/shell` | Exact trusted process execution |
+| `internal/testing/mockllm` | Deterministic ADK model fake |
 
-A step prompt becomes part of the agent instruction. `.md` and `.txt` values are loaded as files. Event and environment templates render before execution.
+## Verification boundaries
 
-ADK passes predecessor output to successor nodes. v0.2.2 does not implement public named or typed outputs. The text supplied in `output:` only enables storage.
+`mise run check` builds, vets, lints, and runs race-enabled unit tests. `mise run integration` executes complete graphs with deterministic fake models and boundary fakes. `mise run scenarios` checks the exact scenario ownership set and rejects executable legacy markers.
 
-### `internal/prompt`
+Live model or hosted acceptance can supplement those gates only after they pass. It does not replace deterministic validation.
 
-Builds each step instruction from these layers:
+## Later delivery layers
 
-1. Step metadata and available tool names
-2. Pipeline event context
-3. Configured context files
-4. Resolved skill files
-5. Step `system` text and task prompt
+M2 packages the same one-shot CLI and runtime contract as an official GitHub Action. It owns event-to-input mapping, permissions, summaries, outputs, and artifact upload.
 
-Skills are discovered under `.github/ai-workflows/skills/` and may also be referenced by path.
+M3 adds admitted workspace and Git mutation, staged safe-output requests, and a fixed trusted publisher. It does not retroactively grant write authority to M1 tools.
 
-### `internal/provider`
-
-Constructs the bundled provider and resolves a `model.LLM` for each configured model name. Runtime model instances are cached by resolved model name for the duration of one workflow run.
-
-The provider seam is internal in v0.2.2. Adding another provider requires code changes. `model_config.temperature` and `max_tokens` reach ADK generation config; `model_config.extra` is parsed but not forwarded.
-
-### `internal/tool`
-
-The registry maps a dot-namespaced name to an ADK tool. Glob resolution uses `path.Match`. Resolved tools are sorted for deterministic model declarations.
-
-Tool list behavior:
-
-```text
-step tools omitted    -> configured defaults
-step tools []         -> no tools
-step tools non-empty  -> configured defaults plus step tools
-```
-
-Registered namespaces:
-
-- `github.*`: 15 read/write GitHub operations
-- `files.*`: read, find, grep
-- `git.*`: log, blame, show, diff
-- `shell.*`: command execution
-- `web.*`: fetch and request
-
-The exact shipped catalog is maintained in `README.md` and the package `RegisterAll` functions.
-
-The accepted M1 replacement keeps `files.read`, `files.find`, `files.grep`, `web.fetch`, and `shell.run`; renames Git reads to `git.read.log`, `git.read.blame`, `git.read.show`, and `git.read.diff`; and places every GitHub read/review operation under `github.read.*`. Portable workflows may use exact names or `files.*`, `git.read.*`, and `github.read.*`. The broader `git.*`, `github.*`, and global `*` selectors reject. GitHub mutation and arbitrary-method web requests are not in M1. These names describe the accepted target, not shipped v0.2.2 behavior.
-
-### `internal/runtime`
-
-Coordinates loading, provider construction, registry assembly, compilation, ADK runner setup, event collection, and result formatting.
-
-The runtime uses an in-memory ADK session service. State lasts for one invocation. Errors fail the workflow and mark pending steps as skipped. Completed-step output remains available in the returned partial result.
-
-## Results and GitHub integration
-
-In shipped v0.2.2, `RunWithResult` returns workflow and step statuses, outputs, durations, and failure details. The CLI formats the result as text, JSON, or Markdown.
-
-In the accepted M1 contract, `validate`, `plan`, and `run` each emit one text or schema-versioned JSON payload; logs stay on stderr. One-shot evidence is not a resumable checkpoint/session store.
-
-Inside the current GitHub Action, v0.2.2 also writes:
-
-- `status`, `workflow`, `duration_ms`, and `failed_step` to `GITHUB_OUTPUT`
-- the Markdown report to `GITHUB_STEP_SUMMARY`
-
-The composite Action maps these values to its public outputs.
-
-## Security model
-
-Tool visibility is a capability boundary for the model. It is not process isolation.
-
-- File operations reject paths outside the configured root.
-- Git read operations execute with the repository root as cwd.
-- Shell commands can access anything the runner account can access.
-- Web tools can reach anything available through the runner network.
-- GitHub writes are limited by the token's repository permissions.
-
-Pipeline authors must treat workflow files as code, use least-privilege tokens, and avoid exposing shell, network, or write tools to untrusted pull-request content. See `SECURITY.md`.
-
-## Testing
-
-| Tier | Command | Boundary |
-|---|---|---|
-| Unit | `mise run test` | parsing, graph compilation, tools, formatting |
-| Integration | `mise run integration` | full ADK graph with a mock model |
-| Smoke | `mise run smoke` | live model with a fake GitHub API |
-| Live scenarios | duto-test Actions workflow | released binary in a real pipeline |
-
-`mise run check` runs build, vet, lint, and race tests. Live acceptance runs after deterministic checks.
-
-## Delivery direction
-
-Future work is layered so optional host features do not become core prerequisites:
-
-1. **CLI-first core:** strict YAML, effective-plan inspection, typed static DAG execution, exact model/tool/prompt/result contracts, limits, and local evidence.
-2. **One-shot GitHub adapter:** trusted event mapping, least-privilege permissions, summaries, outputs, and artifact upload over the same core runtime.
-3. **Bounded authoring and safe outputs:** admitted workspace/process/Git mutation and a fixed publisher.
-4. **Future durable hosts:** persistent pause/resume, encrypted GitHub state, cross-runner recovery, lifecycle races, and asynchronous reply correlation.
-
-Strict validation, typed outputs, trust derivation, finite native subagents, and admitted bounded file/read-only Git/GitHub read-review/web/`shell.run` compatibility are accepted M1 work. One-shot Action mapping is M2. Workspace/Git mutation, staged safe outputs, and trusted publication are M3. Public plugin/custom-provider extensibility and additional speculative adapters remain unscheduled. The durable-session decisions already made are preserved by [ADR 008](adr/008-product-center-and-delivery-layers.md) but are not M1 construction dependencies.
-
-This document should not describe deferred designs as shipped until their acceptance criteria pass.
+A future durable-host milestone may add persistence, pause/resume, encrypted host state, cross-runner recovery, effect replay, and asynchronous reply correlation. None of those facilities is required or implied by the current one-shot evidence bundle.
