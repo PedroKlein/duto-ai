@@ -1,237 +1,447 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
-	"log/slog"
+	"io"
 	"os"
-	"strconv"
+	"slices"
 	"strings"
+	"sync"
 
+	"github.com/spf13/cobra"
+	"google.golang.org/adk/v2/model"
+
+	"github.com/PedroKlein/duto-ai/internal/compiler"
 	"github.com/PedroKlein/duto-ai/internal/config"
-	"github.com/PedroKlein/duto-ai/internal/logging"
+	"github.com/PedroKlein/duto-ai/internal/plan"
+	"github.com/PedroKlein/duto-ai/internal/provider"
 	"github.com/PedroKlein/duto-ai/internal/runtime"
 )
 
-const defaultConfigPath = ".github/ai-workflows/config.yaml"
+const defaultConfigPath = "duto.yaml"
 
-// Set by goreleaser ldflags.
+const (
+	commandValidate = "validate"
+	commandPlan     = "plan"
+	commandRun      = "run"
+	commandVersion  = "version"
+)
+
+const (
+	exitSuccess   = 0
+	exitInternal  = 1
+	exitUsage     = 2
+	exitAdmission = 3
+	exitExecution = 4
+	exitCancelled = 130
+)
+
 var (
 	version = "dev"
 	commit  = "none"
 )
 
-// ErrMissingWorkflowPath is returned when no workflow file is specified.
-var ErrMissingWorkflowPath = errors.New("workflow YAML path is required")
+var (
+	errCommandRequired   = errors.New("command is required")
+	errEmptyPayload      = errors.New("empty command payload")
+	errInvalidFormat     = errors.New("invalid format")
+	errRunUnavailable    = errors.New("workflow execution is unavailable")
+	errUnknownCommand    = errors.New("unknown command")
+	errWorkflowNeeded    = errors.New("workflow is required")
+	errUnknownModelAlias = errors.New("unknown admitted model alias")
+	errUnknownProvider   = errors.New("unknown admitted provider binding")
+	errBundledProvider   = errors.New("creating bundled provider")
+	errBundledModel      = errors.New("creating bundled model")
+)
+
+type outputFormat string
+
+const (
+	formatText outputFormat = "text"
+	formatJSON outputFormat = "json"
+)
+
+type runWorkflow func(context.Context, *config.Config, *plan.Plan, outputFormat) ([]byte, error)
+
+type commandDependencies struct {
+	stdin  io.Reader
+	stdout io.Writer
+	stderr io.Writer
+	run    runWorkflow
+}
+
+type commandError struct {
+	code int
+	err  error
+}
+
+func (e *commandError) Error() string {
+	return e.err.Error()
+}
+
+func (e *commandError) Unwrap() error {
+	return e.err
+}
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: duto-ai run [--config path] <workflow.yaml>\n")
-		os.Exit(1)
+	dependencies := commandDependencies{
+		stdin:  os.Stdin,
+		stdout: os.Stdout,
+		stderr: os.Stderr,
+		run:    runAdmittedWorkflow,
+	}
+	os.Exit(execute(context.Background(), os.Args[1:], dependencies))
+}
+
+func execute(ctx context.Context, args []string, dependencies commandDependencies) int {
+	commands := []string{commandValidate, commandPlan, commandRun, commandVersion}
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") && !slices.Contains(commands, args[0]) {
+		err := fmt.Errorf("%w %q for \"duto-ai\"", errUnknownCommand, args[0])
+
+		return writeError(dependencies.stderr, usageError(err))
 	}
 
-	switch os.Args[1] {
-	case "run":
-		if err := runCommand(os.Args[2:]); err != nil {
-			slog.Error("fatal", "error", err)
-			os.Exit(1)
-		}
-	case "version":
-		fmt.Printf("duto-ai %s (%s)\n", version, commit)
-	default:
-		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", os.Args[1])
-		os.Exit(1)
+	root := newRootCommand(dependencies)
+	root.SetArgs(args)
+
+	if err := root.ExecuteContext(ctx); err != nil {
+		return writeError(dependencies.stderr, err)
+	}
+
+	return exitSuccess
+}
+
+func newRootCommand(dependencies commandDependencies) *cobra.Command {
+	root := &cobra.Command{
+		Use:           "duto-ai",
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		Args:          cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return usageError(errCommandRequired)
+		},
+	}
+	root.SetIn(dependencies.stdin)
+	root.SetOut(dependencies.stdout)
+	root.SetErr(dependencies.stderr)
+	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError(err) })
+	root.CompletionOptions.DisableDefaultCmd = true
+	root.SetHelpCommand(&cobra.Command{Hidden: true})
+	root.AddCommand(
+		newOperationCommand(commandValidate, validatePayload),
+		newOperationCommand(commandPlan, planPayload),
+		newRunCommand(dependencies),
+		newVersionCommand(dependencies.stdout),
+	)
+
+	return root
+}
+
+type admissionPayload func(*plan.Plan, outputFormat) ([]byte, error)
+
+func newOperationCommand(name string, payload admissionPayload) *cobra.Command {
+	var (
+		configPath  string
+		formatValue string
+	)
+
+	command := &cobra.Command{
+		Use:          name + " [--config FILE] [--format text|json] WORKFLOW|-",
+		Args:         workflowArgs,
+		SilenceUsage: true,
+		RunE: func(command *cobra.Command, args []string) error {
+			format, err := parseFormat(formatValue)
+			if err != nil {
+				return usageError(err)
+			}
+
+			_, compiled, err := admit(configPath, args[0], command.InOrStdin())
+			if err != nil {
+				return admissionError(err)
+			}
+
+			output, err := payload(compiled, format)
+			if err != nil {
+				return internalError(err)
+			}
+
+			return writePayload(command.OutOrStdout(), output)
+		},
+	}
+	addOperationFlags(command, &configPath, &formatValue)
+
+	return command
+}
+
+func newRunCommand(dependencies commandDependencies) *cobra.Command {
+	var (
+		configPath  string
+		formatValue string
+	)
+
+	command := &cobra.Command{
+		Use:          commandRun + " [--config FILE] [--format text|json] WORKFLOW|-",
+		Args:         workflowArgs,
+		SilenceUsage: true,
+		RunE: func(command *cobra.Command, args []string) error {
+			format, err := parseFormat(formatValue)
+			if err != nil {
+				return usageError(err)
+			}
+
+			cfg, compiled, err := admit(configPath, args[0], command.InOrStdin())
+			if err != nil {
+				return admissionError(err)
+			}
+
+			if dependencies.run == nil {
+				return internalError(errRunUnavailable)
+			}
+
+			output, err := dependencies.run(command.Context(), cfg, compiled, format)
+			if err != nil {
+				return err
+			}
+
+			return writePayload(command.OutOrStdout(), output)
+		},
+	}
+	addOperationFlags(command, &configPath, &formatValue)
+
+	return command
+}
+
+func newVersionCommand(output io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:  commandVersion,
+		Args: noArgs,
+		RunE: func(*cobra.Command, []string) error {
+			if _, err := fmt.Fprintf(output, "duto-ai %s (%s)\n", version, commit); err != nil {
+				return internalError(fmt.Errorf("writing version: %w", err))
+			}
+
+			return nil
+		},
 	}
 }
 
-func runCommand(args []string) error {
-	fs := flag.NewFlagSet("run", flag.ExitOnError)
+func addOperationFlags(command *cobra.Command, configPath, formatValue *string) {
+	command.Flags().StringVar(configPath, "config", defaultConfigPath, "trusted runtime configuration")
+	command.Flags().StringVar(formatValue, "format", string(formatText), "output format: text or json")
+	command.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError(err) })
+}
 
-	configPath := fs.String("config", defaultConfigPath, "path to config.yaml")
-	logLevel := fs.String("log-level", "info", "log level (debug/info/warn/error)")
-	repo := fs.String("repo", "", "repository (owner/repo) — overrides GITHUB_REPOSITORY")
-	pr := fs.Int("pr", 0, "pull request number — overrides GITHUB_PR_NUMBER")
-	event := fs.String("event", "", "path to event.json — overrides GITHUB_EVENT_PATH")
-	dryRun := fs.Bool("dry-run", false, "validate and show execution plan without calling LLM")
-	outputFormat := fs.String("output-format", "text", "output format (text/json/markdown)")
-	outputFile := fs.String("output-file", "", "write output to file (in addition to stdout)")
-	verbose := fs.Bool("verbose", false, "enable debug-level output for troubleshooting")
-
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("parsing flags: %w", err)
+func workflowArgs(command *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return usageError(errWorkflowNeeded)
 	}
 
-	if fs.NArg() < 1 {
-		return ErrMissingWorkflowPath
-	}
-
-	workflowPath := fs.Arg(0)
-
-	logging.Setup(*logLevel)
-
-	if *verbose {
-		logging.Level.Set(slog.LevelDebug)
-	}
-
-	// Override env vars from CLI flags for local testing.
-	setEnvOverrides(*repo, *pr, *event)
-
-	if *dryRun {
-		return dryRunWorkflow(*configPath, workflowPath)
-	}
-
-	format, err := runtime.ParseOutputFormat(*outputFormat)
-	if err != nil {
-		return fmt.Errorf("parsing output format: %w", err)
-	}
-
-	ctx := context.Background()
-
-	result, runErr := runtime.RunWithResult(ctx, *configPath, workflowPath)
-
-	// Write output even on failure (partial results are useful).
-	if result != nil {
-		if wErr := writeOutput(result, format, *outputFile); wErr != nil {
-			slog.Error("writing output", "error", wErr)
-		}
-	}
-
-	if runErr != nil {
-		return fmt.Errorf("running workflow: %w", runErr)
+	if err := cobra.ExactArgs(1)(command, args); err != nil {
+		return usageError(err)
 	}
 
 	return nil
 }
 
-// setEnvOverrides applies CLI flag values as env var overrides.
-func setEnvOverrides(repo string, pr int, event string) {
-	if repo != "" {
-		_ = os.Setenv("GITHUB_REPOSITORY", repo)
+func noArgs(command *cobra.Command, args []string) error {
+	if err := cobra.NoArgs(command, args); err != nil {
+		return usageError(err)
 	}
 
-	if pr > 0 {
-		_ = os.Setenv("GITHUB_PR_NUMBER", strconv.Itoa(pr))
-	}
+	return nil
+}
 
-	if event != "" {
-		_ = os.Setenv("GITHUB_EVENT_PATH", event)
+func parseFormat(value string) (outputFormat, error) {
+	switch outputFormat(value) {
+	case formatText:
+		return formatText, nil
+	case formatJSON:
+		return formatJSON, nil
+	default:
+		return "", fmt.Errorf("%w %q", errInvalidFormat, value)
 	}
 }
 
-// dryRunWorkflow validates config/workflow and prints the execution plan.
-func dryRunWorkflow(configPath, workflowPath string) error {
+func admit(configPath, workflowPath string, stdin io.Reader) (*config.Config, *plan.Plan, error) {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return nil, nil, fmt.Errorf("loading config: %w", err)
 	}
 
-	wf, err := config.LoadWorkflow(workflowPath)
+	workflow, err := loadWorkflow(workflowPath, stdin)
 	if err != nil {
-		return fmt.Errorf("loading workflow: %w", err)
+		return nil, nil, err
 	}
 
-	if vErr := config.ValidateWorkflow(wf); vErr != nil {
-		return fmt.Errorf("validating workflow: %w", vErr)
-	}
-
-	sorted, err := config.TopologicalSort(wf.Steps)
+	compiled, err := plan.Compile(cfg, workflow)
 	if err != nil {
-		return fmt.Errorf("sorting steps: %w", err)
+		return nil, nil, fmt.Errorf("compiling plan: %w", err)
 	}
 
-	fmt.Printf("Workflow: %s\n", wf.Name)
-	fmt.Printf("Model:   %s\n", cfg.Defaults.Model)
-	fmt.Printf("Steps:   %d\n\n", len(sorted))
+	return cfg, compiled, nil
+}
 
-	for i, step := range sorted {
-		model := step.Model
-		if model == "" {
-			model = cfg.Defaults.Model
+func loadWorkflow(path string, stdin io.Reader) (*config.Workflow, error) {
+	if path != "-" {
+		workflow, err := config.LoadWorkflow(path)
+		if err != nil {
+			return nil, fmt.Errorf("loading workflow: %w", err)
 		}
 
-		deps := "none"
-		if len(step.Needs) > 0 {
-			deps = strings.Join(step.Needs, ", ")
-		}
-
-		fmt.Printf("  %d. %s (model: %s, depends: %s)\n", i+1, step.ID, model, deps)
+		return workflow, nil
 	}
 
-	fmt.Println("\n✓ Validation passed — ready to run.")
+	data, err := io.ReadAll(stdin)
+	if err != nil {
+		return nil, fmt.Errorf("reading workflow stdin: %w", err)
+	}
+
+	workflow, err := config.DecodeWorkflow("<stdin>", data)
+	if err != nil {
+		return nil, fmt.Errorf("loading workflow: %w", err)
+	}
+
+	return workflow, nil
+}
+
+func runAdmittedWorkflow(ctx context.Context, cfg *config.Config, compiled *plan.Plan, format outputFormat) ([]byte, error) {
+	result, err := runtime.Run(ctx, compiled, bundledModelResolver(cfg))
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, context.Canceled
+		}
+
+		return nil, executionError(err)
+	}
+
+	if format == formatJSON {
+		output, encodeErr := result.JSON()
+		if encodeErr != nil {
+			return nil, internalError(encodeErr)
+		}
+
+		return output, nil
+	}
+
+	output, err := result.Text()
+	if err != nil {
+		return nil, internalError(err)
+	}
+
+	return output, nil
+}
+
+func bundledModelResolver(cfg *config.Config) compiler.ModelResolver {
+	var mu sync.Mutex
+
+	providers := make(map[string]*provider.Provider)
+	models := make(map[string]model.LLM)
+
+	return func(ctx context.Context, alias string) (model.LLM, error) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		if llm := models[alias]; llm != nil {
+			return llm, nil
+		}
+
+		binding, exists := cfg.Models[alias]
+		if !exists {
+			return nil, errUnknownModelAlias
+		}
+
+		bundled := providers[binding.Provider]
+		if bundled == nil {
+			definition, ok := cfg.Providers[binding.Provider]
+			if !ok {
+				return nil, errUnknownProvider
+			}
+
+			created, err := provider.NewProvider(ctx, definition)
+			if err != nil {
+				return nil, errBundledProvider
+			}
+
+			bundled = created
+			providers[binding.Provider] = bundled
+		}
+
+		llm, err := bundled.Model(binding.Target)
+		if err != nil {
+			return nil, errBundledModel
+		}
+
+		models[alias] = llm
+
+		return llm, nil
+	}
+}
+
+func validatePayload(_ *plan.Plan, format outputFormat) ([]byte, error) {
+	if format == formatJSON {
+		return []byte(`{"version":1,"valid":true}`), nil
+	}
+
+	return []byte("valid"), nil
+}
+
+func planPayload(compiled *plan.Plan, format outputFormat) ([]byte, error) {
+	if format == formatJSON {
+		return compiled.JSON(), nil
+	}
+
+	return compiled.Text(), nil
+}
+
+func writePayload(output io.Writer, payload []byte) error {
+	payload = bytes.TrimRight(payload, "\n")
+	if len(payload) == 0 {
+		return internalError(errEmptyPayload)
+	}
+
+	if _, err := fmt.Fprintf(output, "%s\n", payload); err != nil {
+		return internalError(fmt.Errorf("writing command output: %w", err))
+	}
 
 	return nil
 }
 
-func writeOutput(result *runtime.WorkflowResult, format runtime.OutputFormat, outputFile string) error {
-	formatted, err := result.FormatOutput(format)
-	if err != nil {
-		return fmt.Errorf("formatting output: %w", err)
+func writeError(output io.Writer, err error) int {
+	if _, writeErr := fmt.Fprintf(output, "error: %v\n", err); writeErr != nil {
+		return exitInternal
 	}
 
-	// Write to stdout for JSON (machine-parseable), stderr for text.
-	switch format {
-	case runtime.OutputFormatJSON:
-		_, _ = fmt.Fprintln(os.Stdout, formatted)
-	case runtime.OutputFormatText:
-		_, _ = fmt.Fprintln(os.Stderr, formatted)
-	case runtime.OutputFormatMarkdown:
-		_, _ = fmt.Fprintln(os.Stdout, formatted)
-	}
-
-	// Write to file if requested.
-	if outputFile != "" {
-		if wErr := os.WriteFile(outputFile, []byte(formatted+"\n"), 0o644); wErr != nil { //nolint:gosec // output file permissions are intentionally world-readable
-			return fmt.Errorf("writing output file %q: %w", outputFile, wErr)
-		}
-	}
-
-	// Set GitHub step outputs when running in GHA.
-	writeGitHubOutput(result)
-
-	// Write to GITHUB_STEP_SUMMARY for action run visibility.
-	writeStepSummary(result)
-
-	return nil
+	return codeForError(err)
 }
 
-func writeGitHubOutput(result *runtime.WorkflowResult) {
-	ghOutput := os.Getenv("GITHUB_OUTPUT")
-	if ghOutput == "" {
-		return
+func codeForError(err error) int {
+	if errors.Is(err, context.Canceled) {
+		return exitCancelled
 	}
 
-	f, err := os.OpenFile(ghOutput, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644) //nolint:gosec // GITHUB_OUTPUT path is provided by GHA runner
-	if err != nil {
-		slog.Debug("opening GITHUB_OUTPUT", "error", err)
-
-		return
+	var commandErr *commandError
+	if errors.As(err, &commandErr) {
+		return commandErr.code
 	}
-	defer f.Close() //nolint:errcheck // best-effort write to GHA output
 
-	_, _ = fmt.Fprintf(f, "status=%s\n", result.Status)
-	_, _ = fmt.Fprintf(f, "workflow=%s\n", result.WorkflowName)
-	_, _ = fmt.Fprintf(f, "duration_ms=%d\n", result.Duration.Milliseconds())
-
-	if failed := result.Failed(); failed != nil {
-		_, _ = fmt.Fprintf(f, "failed_step=%s\n", failed.StepID)
-	}
+	return exitInternal
 }
 
-func writeStepSummary(result *runtime.WorkflowResult) {
-	summaryPath := os.Getenv("GITHUB_STEP_SUMMARY")
-	if summaryPath == "" {
-		return
-	}
+func usageError(err error) error {
+	return &commandError{code: exitUsage, err: err}
+}
 
-	f, err := os.OpenFile(summaryPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644) //nolint:gosec // GITHUB_STEP_SUMMARY path is provided by GHA runner
-	if err != nil {
-		slog.Debug("opening GITHUB_STEP_SUMMARY", "error", err)
+func admissionError(err error) error {
+	return &commandError{code: exitAdmission, err: err}
+}
 
-		return
-	}
-	defer f.Close() //nolint:errcheck // best-effort write to step summary
+func executionError(err error) error {
+	return &commandError{code: exitExecution, err: err}
+}
 
-	_, _ = fmt.Fprintln(f, result.FormatMarkdown())
+func internalError(err error) error {
+	return &commandError{code: exitInternal, err: err}
 }

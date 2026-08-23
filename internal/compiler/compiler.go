@@ -1,43 +1,93 @@
-// Package compiler transforms workflow configuration into an ADK v2 workflow agent.
 package compiler
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"google.golang.org/adk/v2/agent"
-	"google.golang.org/adk/v2/agent/workflowagent"
+	"google.golang.org/adk/v2/agent/llmagent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/workflow"
+	"google.golang.org/genai"
 
-	"github.com/PedroKlein/duto-ai/internal/config"
-	"github.com/PedroKlein/duto-ai/internal/prompt"
-	"github.com/PedroKlein/duto-ai/internal/tool"
+	"github.com/PedroKlein/duto-ai/internal/plan"
 )
 
-// ModelResolver returns a model.LLM for the given model name.
-// It is called once per unique model name during compilation.
-type ModelResolver func(modelName string) (model.LLM, error)
+const TerminalNodeName = "duto-terminal-result"
 
-// Compile transforms a parsed workflow and config into a ready-to-run ADK workflow agent.
-// The returned agent.Agent can be passed directly to runner.New as the root agent.
-func Compile(wf *config.Workflow, cfg *config.Config, reg *tool.Registry, resolve ModelResolver, eventCtx *prompt.EventContext) (agent.Agent, error) {
-	sorted, err := config.TopologicalSort(wf.Steps)
-	if err != nil {
-		return nil, fmt.Errorf("topological sort: %w", err)
+var (
+	ErrNilPlan          = errors.New("plan is nil")
+	ErrNilResolver      = errors.New("model resolver is nil")
+	ErrNilResolvedModel = errors.New("model resolver returned nil")
+	ErrUnsupportedPlan  = errors.New("plan is outside the no-tools tracer")
+)
+
+type ModelResolver func(context.Context, string) (model.LLM, error)
+
+func Compile(ctx context.Context, compiled *plan.Plan, resolve ModelResolver) (agent.Agent, error) {
+	if compiled == nil {
+		return nil, ErrNilPlan
 	}
 
-	nodes, agents, err := buildNodes(sorted, cfg, reg, resolve, eventCtx)
+	if resolve == nil {
+		return nil, ErrNilResolver
+	}
+
+	snapshot := compiled.Snapshot()
+	if len(snapshot.Workflow.Steps) != 1 || len(snapshot.Workflow.Inputs) != 0 {
+		return nil, ErrUnsupportedPlan
+	}
+
+	step := snapshot.Workflow.Steps[0]
+	if len(step.Needs) != 0 || len(step.Tools) != 0 {
+		return nil, ErrUnsupportedPlan
+	}
+
+	llm, err := resolve(ctx, step.Model)
+	if err != nil {
+		return nil, fmt.Errorf("resolving model alias: %w", err)
+	}
+
+	if llm == nil {
+		return nil, ErrNilResolvedModel
+	}
+
+	stepAgent, err := newStepAgent(step, llm)
 	if err != nil {
 		return nil, err
 	}
 
-	edges := buildEdges(sorted, nodes)
+	timeout, err := time.ParseDuration(step.Limits.Timeout)
+	if err != nil {
+		return nil, fmt.Errorf("parsing step timeout: %w", err)
+	}
 
-	root, err := workflowagent.New(workflowagent.Config{
-		Name:        wf.Name,
-		Description: fmt.Sprintf("Workflow %q with %d steps", wf.Name, len(sorted)),
-		Edges:       edges,
-		SubAgents:   agents,
+	node, err := workflow.NewAgentNodeWithSchemas(stepAgent, toJSONSchema(step.Input), toJSONSchema(step.Output), workflow.NodeConfig{Timeout: timeout})
+	if err != nil {
+		return nil, fmt.Errorf("creating workflow node: %w", err)
+	}
+
+	terminal, err := workflow.NewFunctionNodeWithSchema(TerminalNodeName, func(_ agent.Context, input map[string]any) (map[string]any, error) {
+		return input, nil
+	}, toJSONSchema(step.Output), toJSONSchema(step.Output), workflow.NodeConfig{})
+	if err != nil {
+		return nil, fmt.Errorf("creating terminal result node: %w", err)
+	}
+
+	edges := []workflow.Edge{{From: workflow.Start, To: node}, {From: node, To: terminal}}
+
+	wf, err := workflow.New(snapshot.Workflow.Name, edges, workflow.WithMaxConcurrency(snapshot.Workflow.Limits.MaxConcurrency))
+	if err != nil {
+		return nil, fmt.Errorf("creating workflow: %w", err)
+	}
+
+	root, err := agent.New(agent.Config{
+		Name:        snapshot.Workflow.Name,
+		Description: "Execute one admitted typed workflow.",
+		SubAgents:   []agent.Agent{stepAgent},
+		Run:         wf.Run,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating workflow agent: %w", err)
@@ -46,49 +96,37 @@ func Compile(wf *config.Workflow, cfg *config.Config, reg *tool.Registry, resolv
 	return root, nil
 }
 
-func buildNodes(steps []config.Step, cfg *config.Config, reg *tool.Registry, resolve ModelResolver, eventCtx *prompt.EventContext) (map[string]workflow.Node, []agent.Agent, error) {
-	nodes := make(map[string]workflow.Node, len(steps))
-	agents := make([]agent.Agent, 0, len(steps))
-
-	for _, step := range steps {
-		node, a, err := buildNode(step, cfg, reg, resolve, eventCtx)
-		if err != nil {
-			return nil, nil, fmt.Errorf("building node %q: %w", step.ID, err)
-		}
-
-		nodes[step.ID] = node
-
-		agents = append(agents, a)
+func newStepAgent(step plan.Step, llm model.LLM) (agent.Agent, error) {
+	cfg := llmagent.Config{
+		Name:         step.ID,
+		Description:  "Execute one admitted typed step.",
+		Instruction:  step.Instruction,
+		Model:        llm,
+		Mode:         llmagent.ModeSingleTurn,
+		InputSchema:  toGenAISchema(step.Input),
+		OutputSchema: toGenAISchema(step.Output),
+		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
+			NewCallLimiter(step.ID, min(step.Limits.MaxIterations, step.Limits.MaxModelCalls)),
+		},
 	}
 
-	return nodes, agents, nil
-}
+	if step.ModelConfig.Temperature != nil || step.ModelConfig.MaxOutputTokens != nil {
+		cfg.GenerateContentConfig = &genai.GenerateContentConfig{}
 
-func buildEdges(steps []config.Step, nodes map[string]workflow.Node) []workflow.Edge {
-	eb := workflow.NewEdgeBuilder()
+		if step.ModelConfig.Temperature != nil {
+			value := float32(*step.ModelConfig.Temperature)
+			cfg.GenerateContentConfig.Temperature = &value
+		}
 
-	for _, step := range steps {
-		node := nodes[step.ID]
-
-		switch {
-		case len(step.Needs) == 0:
-			eb.Add(workflow.Start, node)
-
-		case len(step.Needs) == 1:
-			eb.Add(nodes[step.Needs[0]], node)
-
-		default:
-			joinNode := workflow.NewJoinNode(step.ID + "_join")
-			predecessors := make([]workflow.Node, 0, len(step.Needs))
-
-			for _, dep := range step.Needs {
-				predecessors = append(predecessors, nodes[dep])
-			}
-
-			eb.AddFanIn(joinNode, predecessors...)
-			eb.Add(joinNode, node)
+		if step.ModelConfig.MaxOutputTokens != nil {
+			cfg.GenerateContentConfig.MaxOutputTokens = int32(*step.ModelConfig.MaxOutputTokens)
 		}
 	}
 
-	return eb.Build()
+	stepAgent, err := llmagent.New(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("creating step agent: %w", err)
+	}
+
+	return stepAgent, nil
 }

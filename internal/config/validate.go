@@ -3,110 +3,107 @@ package config
 import (
 	"errors"
 	"fmt"
-	"time"
+	"regexp"
+
+	"gopkg.in/yaml.v3"
 )
 
 var (
 	ErrNilWorkflow        = errors.New("workflow is nil")
 	ErrNoSteps            = errors.New("workflow has no steps")
-	ErrEmptyStepID        = errors.New("step has empty ID")
-	ErrDuplicateStepID    = errors.New("duplicate step ID")
+	ErrDuplicateStepID    = errors.New("duplicate step id")
 	ErrUnknownDependency  = errors.New("unknown dependency")
-	ErrCircularDependency = errors.New("circular dependency detected")
-	ErrInvalidTimeout     = errors.New("invalid timeout duration")
-	ErrInvalidIterations  = errors.New("max_iterations must be positive")
+	ErrCircularDependency = errors.New("circular dependency")
+	ErrInvalidName        = errors.New("invalid name")
+	ErrUnknownResultStep  = errors.New("unknown result step")
 )
 
-// ValidateWorkflow checks a workflow for common errors:
-// - Unique step IDs
-// - Valid needs references
-// - No circular dependencies
-func ValidateWorkflow(wf *Workflow) error {
-	if wf == nil {
+var namePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+
+func ValidateWorkflow(workflow *Workflow) error {
+	if workflow == nil {
 		return ErrNilWorkflow
 	}
 
-	if len(wf.Steps) == 0 {
+	if !namePattern.MatchString(workflow.Name) {
+		return fmt.Errorf("workflow name: %w", ErrInvalidName)
+	}
+
+	if !namePattern.MatchString(workflow.Model) {
+		return fmt.Errorf("workflow model: %w", ErrInvalidName)
+	}
+
+	if len(workflow.Steps) == 0 {
 		return ErrNoSteps
 	}
 
-	ids := make(map[string]bool, len(wf.Steps))
-
-	for _, step := range wf.Steps {
-		if step.ID == "" {
-			return ErrEmptyStepID
+	ids := make(map[string]struct{}, len(workflow.Steps))
+	for _, step := range workflow.Steps {
+		if !namePattern.MatchString(step.ID) {
+			return fmt.Errorf("step id: %w", ErrInvalidName)
 		}
 
-		if ids[step.ID] {
-			return fmt.Errorf("step ID %q: %w", step.ID, ErrDuplicateStepID)
+		if _, exists := ids[step.ID]; exists {
+			return fmt.Errorf("step %q: %w", step.ID, ErrDuplicateStepID)
 		}
 
-		ids[step.ID] = true
+		ids[step.ID] = struct{}{}
 	}
 
-	for _, step := range wf.Steps {
-		for _, need := range step.Needs {
-			if !ids[need] {
-				return fmt.Errorf("step %q references %q: %w", step.ID, need, ErrUnknownDependency)
+	for _, step := range workflow.Steps {
+		for _, dependency := range step.Needs {
+			if _, exists := ids[dependency]; !exists {
+				return fmt.Errorf("step %q: %w", step.ID, ErrUnknownDependency)
 			}
 		}
-
-		if step.Timeout != "" {
-			if _, err := time.ParseDuration(step.Timeout); err != nil {
-				return fmt.Errorf("step %q: %w: %q", step.ID, ErrInvalidTimeout, step.Timeout)
-			}
-		}
-
-		if step.MaxIterations < 0 {
-			return fmt.Errorf("step %q: %w: %d", step.ID, ErrInvalidIterations, step.MaxIterations)
-		}
 	}
 
-	if err := detectCycles(wf.Steps); err != nil {
-		return err
+	if _, exists := ids[workflow.Result.Step]; !exists {
+		return ErrUnknownResultStep
 	}
 
-	return nil
+	_, err := TopologicalSort(workflow.Steps)
+
+	return err
 }
 
-// TopologicalSort returns the steps in a valid execution order.
 func TopologicalSort(steps []Step) ([]Step, error) {
-	graph := make(map[string][]string, len(steps))
-	inDegree := make(map[string]int, len(steps))
-	stepMap := make(map[string]Step, len(steps))
+	indices := make(map[string]int, len(steps))
+	inDegree := make([]int, len(steps))
 
-	for _, s := range steps {
-		graph[s.ID] = nil
-		inDegree[s.ID] = 0
-		stepMap[s.ID] = s
+	edges := make([][]int, len(steps))
+	for i, step := range steps {
+		indices[step.ID] = i
 	}
 
-	for _, s := range steps {
-		for _, dep := range s.Needs {
-			graph[dep] = append(graph[dep], s.ID)
-			inDegree[s.ID]++
+	for i, step := range steps {
+		for _, dependency := range step.Needs {
+			dependencyIndex, exists := indices[dependency]
+			if !exists {
+				return nil, fmt.Errorf("step %q: %w", step.ID, ErrUnknownDependency)
+			}
+
+			edges[dependencyIndex] = append(edges[dependencyIndex], i)
+			inDegree[i]++
 		}
 	}
 
-	var queue []string
+	queue := make([]int, 0, len(steps))
 
-	for id, deg := range inDegree {
-		if deg == 0 {
-			queue = append(queue, id)
+	for i, degree := range inDegree {
+		if degree == 0 {
+			queue = append(queue, i)
 		}
 	}
 
-	var sorted []Step
-
+	sorted := make([]Step, 0, len(steps))
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
 
-		sorted = append(sorted, stepMap[current])
-
-		for _, neighbor := range graph[current] {
+		sorted = append(sorted, steps[current])
+		for _, neighbor := range edges[current] {
 			inDegree[neighbor]--
-
 			if inDegree[neighbor] == 0 {
 				queue = append(queue, neighbor)
 			}
@@ -120,8 +117,52 @@ func TopologicalSort(steps []Step) ([]Step, error) {
 	return sorted, nil
 }
 
-func detectCycles(steps []Step) error {
-	_, err := TopologicalSort(steps)
+func validateDecodedWorkflow(name string, workflow *Workflow, rootFields map[string]*yaml.Node, stepsNode *yaml.Node) error {
+	if !namePattern.MatchString(workflow.Name) {
+		return diagnostic(name, "$.name", rootFields["name"], CodeInvalidValue)
+	}
 
-	return err
+	if !namePattern.MatchString(workflow.Model) {
+		return diagnostic(name, "$.model", rootFields["model"], CodeInvalidValue)
+	}
+
+	if len(workflow.Steps) == 0 {
+		return diagnostic(name, "$.steps", stepsNode, CodeInvalidValue)
+	}
+
+	ids := make(map[string]int, len(workflow.Steps))
+	for i, step := range workflow.Steps {
+		stepFields, err := mappingFields(name, stepsNode.Content[i], fmt.Sprintf("$.steps[%d]", i), "id", "needs", "instruction", "model", "model_config", "tools", "workspaces", "input", "with", "output", "limits")
+		if err != nil {
+			return err
+		}
+
+		if !namePattern.MatchString(step.ID) {
+			return diagnostic(name, fmt.Sprintf("$.steps[%d].id", i), stepFields["id"], CodeInvalidValue)
+		}
+
+		if _, exists := ids[step.ID]; exists {
+			return diagnostic(name, fmt.Sprintf("$.steps[%d].id", i), stepFields["id"], CodeDuplicateKey)
+		}
+
+		ids[step.ID] = i
+	}
+
+	for i, step := range workflow.Steps {
+		for j, dependency := range step.Needs {
+			if _, exists := ids[dependency]; !exists {
+				return diagnostic(name, fmt.Sprintf("$.steps[%d].needs[%d]", i, j), stepsNode.Content[i], CodeInvalidValue)
+			}
+		}
+	}
+
+	if _, exists := ids[workflow.Result.Step]; !exists {
+		return diagnostic(name, "$.result.step", rootFields["result"], CodeInvalidValue)
+	}
+
+	if _, err := TopologicalSort(workflow.Steps); err != nil {
+		return diagnostic(name, "$.steps", stepsNode, CodeInvalidValue)
+	}
+
+	return nil
 }

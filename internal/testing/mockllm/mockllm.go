@@ -16,9 +16,13 @@ var ErrNoMoreResponses = errors.New("mock: no more responses configured")
 
 // Response defines what the mock returns for a single GenerateContent call.
 type Response struct {
-	Text    string
-	Content *genai.Content // If set, takes priority over Text.
-	Error   error
+	Text          string
+	Content       *genai.Content // If set, takes priority over Text.
+	Error         error
+	UsageMetadata *genai.GenerateContentResponseUsageMetadata
+	Partial       bool
+	TurnComplete  bool
+	Emissions     []Response
 }
 
 // MockLLM implements model.LLM for testing.
@@ -47,13 +51,13 @@ func (m *MockLLM) Name() string {
 }
 
 // GenerateContent satisfies model.LLM.
-func (m *MockLLM) GenerateContent(_ context.Context, req *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
+func (m *MockLLM) GenerateContent(ctx context.Context, req *model.LLMRequest, _ bool) iter.Seq2[*model.LLMResponse, error] {
 	m.mu.Lock()
 
 	call := RecordedCall{
 		Contents: req.Contents,
 		Tools:    req.Tools,
-		Config:   req.Config,
+		Config:   cloneConfig(req.Config),
 	}
 	m.calls = append(m.calls, call)
 
@@ -68,15 +72,39 @@ func (m *MockLLM) GenerateContent(_ context.Context, req *model.LLMRequest, _ bo
 	m.mu.Unlock()
 
 	return func(yield func(*model.LLMResponse, error) bool) {
-		if resp.Error != nil {
-			yield(nil, resp.Error)
+		if err := ctx.Err(); err != nil {
+			yield(nil, err)
 
 			return
 		}
 
-		yield(&model.LLMResponse{
-			Content: responseContent(resp),
-		}, nil)
+		emissions := resp.Emissions
+		if len(emissions) == 0 {
+			emissions = []Response{resp}
+		}
+
+		for _, emission := range emissions {
+			if err := ctx.Err(); err != nil {
+				yield(nil, err)
+
+				return
+			}
+
+			if emission.Error != nil {
+				yield(nil, emission.Error)
+
+				return
+			}
+
+			if !yield(&model.LLMResponse{
+				Content:       responseContent(emission),
+				UsageMetadata: emission.UsageMetadata,
+				Partial:       emission.Partial,
+				TurnComplete:  emission.TurnComplete,
+			}, nil) {
+				return
+			}
+		}
 	}
 }
 
@@ -86,6 +114,37 @@ func responseContent(resp Response) *genai.Content {
 	}
 
 	return genai.NewContentFromText(resp.Text, "model")
+}
+
+func cloneConfig(cfg *genai.GenerateContentConfig) *genai.GenerateContentConfig {
+	if cfg == nil {
+		return nil
+	}
+
+	clone := *cfg
+	clone.Tools = make([]*genai.Tool, len(cfg.Tools))
+
+	for i, packedTool := range cfg.Tools {
+		if packedTool == nil {
+			continue
+		}
+
+		toolClone := *packedTool
+		toolClone.FunctionDeclarations = make([]*genai.FunctionDeclaration, len(packedTool.FunctionDeclarations))
+
+		for j, declaration := range packedTool.FunctionDeclarations {
+			if declaration == nil {
+				continue
+			}
+
+			declarationClone := *declaration
+			toolClone.FunctionDeclarations[j] = &declarationClone
+		}
+
+		clone.Tools[i] = &toolClone
+	}
+
+	return &clone
 }
 
 // Calls returns all recorded calls.

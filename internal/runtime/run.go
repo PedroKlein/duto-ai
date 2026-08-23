@@ -1,357 +1,221 @@
-// Package runtime orchestrates the execution of a duto-ai workflow.
 package runtime
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
-	"log/slog"
-	"os"
+	"strings"
 	"time"
 
 	"google.golang.org/adk/v2/agent"
-	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/artifact"
+	"google.golang.org/adk/v2/plugin"
 	"google.golang.org/adk/v2/runner"
 	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 
 	"github.com/PedroKlein/duto-ai/internal/compiler"
-	"github.com/PedroKlein/duto-ai/internal/config"
-	"github.com/PedroKlein/duto-ai/internal/logging"
-	"github.com/PedroKlein/duto-ai/internal/prompt"
-	"github.com/PedroKlein/duto-ai/internal/provider"
-	"github.com/PedroKlein/duto-ai/internal/tool"
-	"github.com/PedroKlein/duto-ai/internal/tool/files"
-	"github.com/PedroKlein/duto-ai/internal/tool/git"
-	gh "github.com/PedroKlein/duto-ai/internal/tool/github"
-	"github.com/PedroKlein/duto-ai/internal/tool/shell"
-	"github.com/PedroKlein/duto-ai/internal/tool/web"
+	"github.com/PedroKlein/duto-ai/internal/plan"
 )
 
-// Run executes a duto-ai workflow end-to-end using ADK's native workflow engine.
-func Run(ctx context.Context, configPath, workflowPath string, opts ...Option) error {
-	_, err := RunWithResult(ctx, configPath, workflowPath, opts...)
-	return err
-}
+var (
+	ErrExecution      = errors.New("workflow execution error")
+	errTerminalOutput = errors.New("terminal output is not an object")
+)
 
-// RunWithResult executes a workflow and returns the structured result.
-// On error, the result still contains partial step data for diagnostics.
-func RunWithResult(ctx context.Context, configPath, workflowPath string, opts ...Option) (*WorkflowResult, error) {
-	options := applyOptions(opts)
+func Run(ctx context.Context, compiled *plan.Plan, resolve compiler.ModelResolver) (*Result, error) {
+	started := time.Now().UTC()
 
-	cfg, err := config.LoadConfig(configPath)
+	runID, err := newRunID()
 	if err != nil {
-		return nil, fmt.Errorf("loading config: %w", err)
+		return nil, fmt.Errorf("creating run identity: %w", err)
 	}
 
-	wf, err := config.LoadWorkflow(workflowPath)
+	result := newResult(compiled, runID, started)
+
+	root, err := compiler.Compile(ctx, compiled, resolve)
 	if err != nil {
-		return nil, fmt.Errorf("loading workflow: %w", err)
+		result.Status = StatusFailed
+		result.FinishedAt = time.Now().UTC()
+		result.Errors = append(result.Errors, ResultError{Kind: "construction"})
+
+		return result, ErrExecution
 	}
 
-	if vErr := config.ValidateWorkflow(wf); vErr != nil {
-		return nil, fmt.Errorf("validating workflow: %w", vErr)
-	}
+	writer := newEvidenceWriter(runID)
 
-	slog.Info("running workflow", "name", wf.Name, "steps", len(wf.Steps))
-
-	resolver, err := buildModelResolver(ctx, cfg, options)
+	evidencePlugin, err := writer.plugin()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating evidence plugin: %w", err)
 	}
-
-	reg, err := buildRegistry(options)
-	if err != nil {
-		return nil, err
-	}
-
-	eventCtx, _ := prompt.LoadEventContext() //nolint:nolintlint // event context is optional
-
-	root, err := compiler.Compile(wf, cfg, reg, resolver, eventCtx)
-	if err != nil {
-		return nil, fmt.Errorf("compiling workflow: %w", err)
-	}
-
-	result, err := execute(ctx, root, wf)
-	if err != nil {
-		logWorkflowFailure(result)
-
-		return result, err
-	}
-
-	slog.Info("workflow completed", "name", wf.Name)
-
-	return result, nil
-}
-
-func execute(ctx context.Context, root agent.Agent, wf *config.Workflow) (*WorkflowResult, error) {
-	sessService := session.InMemoryService()
 
 	r, err := runner.New(runner.Config{
-		AppName:           "duto-ai",
-		Agent:             root,
-		SessionService:    sessService,
+		AppName:         "duto-ai",
+		Agent:           root,
+		SessionService:  session.InMemoryService(),
+		ArtifactService: artifact.InMemoryService(),
+		PluginConfig: runner.PluginConfig{
+			Plugins: []*plugin.Plugin{evidencePlugin},
+		},
 		AutoCreateSession: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating runner: %w", err)
 	}
 
-	msg := genai.NewContentFromText(wf.Steps[0].Prompt, "user")
+	runErr := consumeEvents(ctx, r, runID, result)
+	finishResult(result, ctx.Err(), runErr)
 
-	result := newWorkflowResult(wf)
+	if err := writer.finish(result.Status); err != nil {
+		result.Status = StatusIncomplete
+		result.Errors = append(result.Errors, ResultError{Kind: "evidence"})
 
-	for event, iterErr := range r.Run(ctx, "user", "run", msg, agent.RunConfig{}) {
-		if iterErr != nil {
-			recordStepFailure(result, iterErr)
+		return result, ErrEvidence
+	}
 
-			return result, fmt.Errorf("execution error: %w", iterErr)
-		}
+	if err := writeEvidenceBundle(compiled.EvidenceDirectory(), compiled.Digest(), result, writer); err != nil {
+		result.Status = StatusIncomplete
+		result.Errors = append(result.Errors, ResultError{Kind: "evidence"})
 
-		if event == nil || event.Partial {
+		return result, ErrEvidence
+	}
+
+	switch result.Status {
+	case StatusSucceeded:
+		return result, nil
+	case StatusCancelled:
+		return result, context.Canceled
+	case StatusFailed, StatusIncomplete:
+		return result, ErrExecution
+	default:
+		return result, ErrExecution
+	}
+}
+
+func consumeEvents(ctx context.Context, r *runner.Runner, runID string, result *Result) error {
+	var runErr error
+
+	for event, iterationErr := range r.Run(ctx, "duto", runID, genai.NewContentFromText("{}", genai.RoleUser), agent.RunConfig{}) {
+		if iterationErr != nil {
+			if runErr == nil {
+				runErr = iterationErr
+			}
+
 			continue
 		}
 
-		recordEvent(result, event)
-	}
-
-	finalizeResult(result)
-
-	return result, nil
-}
-
-func newWorkflowResult(wf *config.Workflow) *WorkflowResult {
-	steps := make([]StepResult, 0, len(wf.Steps))
-
-	for _, s := range wf.Steps {
-		steps = append(steps, StepResult{
-			StepID: s.ID,
-			Status: StepStatusPending,
-		})
-	}
-
-	return &WorkflowResult{
-		WorkflowName: wf.Name,
-		Status:       StepStatusRunning,
-		Steps:        steps,
-		StartedAt:    time.Now(),
-	}
-}
-
-func recordEvent(result *WorkflowResult, event *session.Event) {
-	stepID := event.Author
-	if stepID == "" {
-		return
-	}
-
-	step := findStep(result, stepID)
-	if step == nil {
-		return
-	}
-
-	// Mark as running on first event for this step.
-	if step.Status == StepStatusPending {
-		step.Status = StepStatusRunning
-		step.StartedAt = time.Now()
-
-		logging.GHAGroup("Step: " + stepID)
-	}
-
-	output := extractOutput(event)
-	if output != "" {
-		step.Output = output
-		step.Status = StepStatusCompleted
-		step.Duration = time.Since(step.StartedAt)
-		logging.GHAStepTiming(stepID, step.Duration)
-		logging.GHAEndGroup()
-	}
-}
-
-func recordStepFailure(result *WorkflowResult, err error) {
-	now := time.Now()
-	result.Status = StepStatusFailed
-	result.Duration = now.Sub(result.StartedAt)
-
-	// Mark the currently running step as failed.
-	for i := range result.Steps {
-		if result.Steps[i].Status != StepStatusRunning {
+		if event == nil {
 			continue
 		}
 
-		result.Steps[i].Status = StepStatusFailed
-		result.Steps[i].Error = err
-		result.Steps[i].ErrorMsg = err.Error()
-		result.Steps[i].Duration = now.Sub(result.Steps[i].StartedAt)
+		if usage := usageFromEvent(event); usage != nil {
+			result.Usage = usage
+			result.Steps[0].Usage = usage
+		}
 
-		logging.GHAError(fmt.Sprintf("Step %q failed: %s", result.Steps[i].StepID, err.Error()))
-		logging.GHAEndGroup()
+		if event.Partial || !isTerminalEvent(event) || event.Output == nil {
+			continue
+		}
 
-		break
+		output, outputErr := cloneObject(event.Output)
+		if outputErr != nil {
+			if runErr == nil {
+				runErr = outputErr
+			}
+
+			continue
+		}
+
+		result.Output = output
+		result.Steps[0].Output = output
 	}
 
-	// Mark remaining pending steps as skipped.
+	return runErr
+}
+
+func newResult(compiled *plan.Plan, runID string, started time.Time) *Result {
+	result := &Result{
+		Version:   ResultVersion,
+		RunID:     runID,
+		Status:    StatusIncomplete,
+		StartedAt: started,
+		Steps:     []StepResult{},
+		Errors:    []ResultError{},
+	}
+	if compiled == nil {
+		return result
+	}
+
+	snapshot := compiled.Snapshot()
+
+	result.Workflow = snapshot.Workflow.Name
+	for _, step := range snapshot.Workflow.Steps {
+		result.Steps = append(result.Steps, StepResult{ID: step.ID, Status: StatusIncomplete})
+	}
+
+	return result
+}
+
+func finishResult(result *Result, contextErr, runErr error) {
+	result.FinishedAt = time.Now().UTC()
+
+	switch {
+	case errors.Is(contextErr, context.Canceled), errors.Is(contextErr, context.DeadlineExceeded):
+		result.Status = StatusCancelled
+		result.Errors = append(result.Errors, ResultError{Kind: "cancelled"}) //nolint:misspell // serialized contract spelling
+	case runErr != nil:
+		result.Status = StatusFailed
+		result.Errors = append(result.Errors, ResultError{Kind: "execution"})
+	case result.Output == nil:
+		result.Status = StatusIncomplete
+		result.Errors = append(result.Errors, ResultError{Kind: "missing_terminal_output"})
+	default:
+		result.Status = StatusSucceeded
+		result.Outcome, _ = result.Output["outcome"].(string)
+	}
+
 	for i := range result.Steps {
-		if result.Steps[i].Status == StepStatusPending {
-			result.Steps[i].Status = StepStatusSkipped
-		}
+		result.Steps[i].Status = result.Status
 	}
 }
 
-func finalizeResult(result *WorkflowResult) {
-	result.Duration = time.Since(result.StartedAt)
-	result.Status = StepStatusCompleted
-
-	for _, step := range result.Steps {
-		if step.Status == StepStatusFailed {
-			result.Status = StepStatusFailed
-
-			break
-		}
+func isTerminalEvent(event *session.Event) bool {
+	if event.NodeInfo == nil {
+		return false
 	}
+
+	path := event.NodeInfo.Path
+	segment := path[strings.LastIndex(path, "/")+1:]
+
+	return strings.HasPrefix(segment, compiler.TerminalNodeName+"@")
 }
 
-func findStep(result *WorkflowResult, stepID string) *StepResult {
-	for i := range result.Steps {
-		if result.Steps[i].StepID == stepID {
-			return &result.Steps[i]
-		}
-	}
-
-	return nil
-}
-
-func extractOutput(event *session.Event) string {
-	if event.Output != nil {
-		if s, ok := event.Output.(string); ok {
-			return s
-		}
-	}
-
-	if event.Content == nil {
-		return ""
-	}
-
-	var last string
-
-	for _, part := range event.Content.Parts {
-		if part.Text != "" && !part.Thought {
-			last = part.Text
-		}
-	}
-
-	return last
-}
-
-func logWorkflowFailure(result *WorkflowResult) {
-	if result == nil {
-		return
-	}
-
-	failed := result.Failed()
-	if failed == nil {
-		return
-	}
-
-	slog.Error("workflow failed",
-		"workflow", result.WorkflowName,
-		"failed_step", failed.StepID,
-		"error", failed.ErrorMsg,
-		"duration", result.Duration.Truncate(time.Millisecond),
-	)
-
-	completed := result.CompletedSteps()
-	if len(completed) > 0 {
-		names := make([]string, 0, len(completed))
-		for _, s := range completed {
-			names = append(names, s.StepID)
-		}
-
-		slog.Info("partial progress", "completed_steps", names)
-	}
-
-	fmt.Fprintln(os.Stderr, "\n"+result.FormatSummary())
-}
-
-func buildModelResolver(ctx context.Context, cfg *config.Config, options *Options) (compiler.ModelResolver, error) {
-	// If a mock LLM is injected, return it for all model names.
-	if options.LLM != nil {
-		return func(_ string) (model.LLM, error) {
-			return options.LLM, nil
-		}, nil
-	}
-
-	p, err := provider.NewProvider(ctx, cfg.Provider)
+func cloneObject(value any) (map[string]any, error) {
+	encoded, err := json.Marshal(value)
 	if err != nil {
-		return nil, fmt.Errorf("creating provider: %w", err)
+		return nil, fmt.Errorf("encoding terminal output: %w", err)
 	}
 
-	cache := make(map[string]model.LLM)
+	var output map[string]any
+	if err := json.Unmarshal(encoded, &output); err != nil {
+		return nil, fmt.Errorf("decoding terminal output: %w", err)
+	}
 
-	return func(modelName string) (model.LLM, error) {
-		if llm, ok := cache[modelName]; ok {
-			return llm, nil
-		}
+	if output == nil {
+		return nil, errTerminalOutput
+	}
 
-		llm, err := p.Model(modelName)
-		if err != nil {
-			return nil, fmt.Errorf("creating model %q: %w", modelName, err)
-		}
-
-		cache[modelName] = llm
-
-		return llm, nil
-	}, nil
+	return output, nil
 }
 
-func buildRegistry(options *Options) (*tool.Registry, error) {
-	reg := tool.NewRegistry()
-
-	repoRoot := options.RepoRoot
-	if repoRoot == "" {
-		var err error
-
-		repoRoot, err = os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("getting working directory: %w", err)
-		}
+func newRunID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("reading random bytes: %w", err)
 	}
 
-	// Register GitHub tools.
-	token := os.Getenv("GITHUB_TOKEN")
-	baseURL := options.GitHubBaseURL
-
-	if baseURL == "" {
-		baseURL = os.Getenv("GITHUB_API_URL")
-	}
-
-	if baseURL == "" {
-		baseURL = "https://api.github.com"
-	}
-
-	client := gh.NewClient(token, baseURL)
-
-	if err := gh.RegisterAll(reg, client); err != nil {
-		return nil, fmt.Errorf("registering github tools: %w", err)
-	}
-
-	// Register file tools.
-	if err := files.RegisterAll(reg, repoRoot); err != nil {
-		return nil, fmt.Errorf("registering files tools: %w", err)
-	}
-
-	// Register git tools.
-	if err := git.RegisterAll(reg, repoRoot); err != nil {
-		return nil, fmt.Errorf("registering git tools: %w", err)
-	}
-
-	// Register shell tool.
-	if err := shell.RegisterAll(reg, repoRoot); err != nil {
-		return nil, fmt.Errorf("registering shell tools: %w", err)
-	}
-
-	// Register web tools.
-	if err := web.RegisterAll(reg); err != nil {
-		return nil, fmt.Errorf("registering web tools: %w", err)
-	}
-
-	return reg, nil
+	return "run-" + hex.EncodeToString(value[:]), nil
 }

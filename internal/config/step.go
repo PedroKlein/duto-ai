@@ -1,32 +1,81 @@
 package config
 
-import "time"
-
-// Step defines a single step in a workflow DAG.
-type Step struct {
-	ID            string       `yaml:"id"`
-	Needs         []string     `yaml:"needs,omitempty"`
-	Model         string       `yaml:"model,omitempty"`
-	ModelConfig   ModelConfig  `yaml:"model_config,omitempty"`
-	Tools         *[]string    `yaml:"tools,omitempty"`
-	Skills        []string     `yaml:"skills,omitempty"`
-	System        string       `yaml:"system,omitempty"`
-	Prompt        string       `yaml:"prompt"`
-	Output        string       `yaml:"output,omitempty"`
-	MaxIterations int          `yaml:"max_iterations,omitempty"`
-	Timeout       string       `yaml:"timeout,omitempty"`
-	Retry         *RetryPolicy `yaml:"retry,omitempty"`
+type ModelConfig struct {
+	Temperature        float64
+	HasTemperature     bool
+	MaxOutputTokens    int
+	HasMaxOutputTokens bool
 }
 
-// RetryPolicy configures automatic retry behavior for transient LLM errors.
-type RetryPolicy struct {
-	MaxAttempts  int    `yaml:"max_attempts,omitempty"`
-	InitialDelay string `yaml:"initial_delay,omitempty"`
+type Limits struct {
+	Timeout          string
+	MaxIterations    int
+	MaxModelCalls    int
+	MaxToolCalls     int
+	MaxConcurrency   int
+	MaxParallelCalls int
+	MaxArtifactBytes int
 }
+
+type InstructionKind uint8
 
 const (
-	DefaultMaxIterations = 25
-	DefaultTimeout       = "300s"
-	DefaultRetryAttempts = 3
-	DefaultRetryDelay    = 2 * time.Second
+	InstructionUnknown InstructionKind = iota
+	InstructionText
 )
+
+type Instruction struct {
+	Kind InstructionKind
+	Text string
+}
+
+type Schema struct {
+	Type       string
+	Properties map[string]Schema
+	Required   []string
+	Items      *Schema
+	MaxLength  int
+	MaxItems   int
+	Enum       []string
+	Minimum    float64
+	Maximum    float64
+	HasMinimum bool
+	HasMaximum bool
+}
+
+type Input struct {
+	Schema Schema
+}
+
+type WorkspaceRef struct {
+	Name   string
+	Access string
+}
+
+type BindingKind uint8
+
+const (
+	BindingUnknown BindingKind = iota
+	BindingInput
+	BindingLiteral
+)
+
+type Binding struct {
+	Kind    BindingKind
+	Input   string
+	Literal string
+}
+
+type Step struct {
+	ID          string
+	Needs       []string
+	Instruction Instruction
+	Model       string
+	ModelConfig ModelConfig
+	Tools       []string
+	Workspaces  []WorkspaceRef
+	Input       Schema
+	With        map[string]Binding
+	Output      Schema
+	Limits      Limits
+}
