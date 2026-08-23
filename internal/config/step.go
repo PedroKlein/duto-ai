@@ -32,6 +32,12 @@ type ToolLimit struct {
 	MaxResultBytes  int
 }
 
+type Retry struct {
+	MaxAttempts  int
+	InitialDelay string
+	MaxDelay     string
+}
+
 type InstructionKind uint8
 
 const (
@@ -172,5 +178,6 @@ type Step struct {
 	With        map[string]Binding
 	WithOrder   []string
 	Output      Schema
+	Retry       Retry
 	Limits      Limits
 }

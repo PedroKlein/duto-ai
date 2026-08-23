@@ -101,12 +101,3 @@ func TestRegistry_Names(t *testing.T) {
 		}
 	}
 }
-
-func TestRegistry_All(t *testing.T) {
-	reg := setupTestRegistry(t)
-
-	all := reg.All()
-	if len(all) != 5 {
-		t.Fatalf("len = %d, want 5", len(all))
-	}
-}

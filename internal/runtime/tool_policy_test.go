@@ -35,6 +35,10 @@ providers:
   default: {type: custom-provider, config: {credential: canary}}
 models:
   light: {provider: default, target: example-model}
+workspaces:
+  source: {root: ., access: read}
+tool_config:
+  files: {workspace: source}
 tools: [files.read]
 tool_limits:
   files.read: {max_calls: 2, timeout: 5s, max_request_bytes: 128, max_result_bytes: 256}
@@ -156,6 +160,10 @@ providers:
   default: {type: custom-provider, config: {credential: canary}}
 models:
   light: {provider: default, target: example-model}
+workspaces:
+  source: {root: ., access: read}
+tool_config:
+  shell: {executable: /bin/echo, args: [], workspace: source, environment: {}, max_stdout_bytes: 64, max_stderr_bytes: 64}
 tools: [shell.run]
 tool_limits:
   shell.run: {max_calls: 1, timeout: 5s, max_request_bytes: 64, max_result_bytes: 256}

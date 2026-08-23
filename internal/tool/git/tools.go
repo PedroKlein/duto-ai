@@ -93,6 +93,10 @@ func RegisterAll(reg *dtool.Registry, policy Policy) error {
 	}
 
 	for _, t := range tools {
+		if _, selected := policy.Limits[t.name]; !selected {
+			continue
+		}
+
 		adkTool, err := t.create()
 		if err != nil {
 			return fmt.Errorf("creating tool %s: %w", t.name, err)
@@ -114,23 +118,42 @@ func normalizePolicy(policy Policy) (Policy, error) {
 		return Policy{}, ErrInvalidPolicy
 	}
 
-	for _, ref := range policy.Refs {
-		if ref == "" || strings.HasPrefix(ref, "-") || strings.ContainsAny(ref, "\x00\r\n") {
-			return Policy{}, ErrInvalidPolicy
-		}
+	if err := validateRefs(policy.Refs); err != nil {
+		return Policy{}, err
 	}
 
-	for _, name := range []string{"git.read.blame", "git.read.diff", "git.read.log", "git.read.show"} {
-		limit, exists := policy.Limits[name]
-		if !exists || limit.MaxCalls <= 0 || limit.Timeout <= 0 || limit.MaxRequestBytes < 0 || limit.MaxResultBytes <= 0 {
-			return Policy{}, fmt.Errorf("%w: %s", ErrInvalidPolicy, name)
-		}
+	if err := validateToolLimits(policy.Limits); err != nil {
+		return Policy{}, err
 	}
 
 	policy.Refs = slices.Clone(policy.Refs)
 	policy.Limits = maps.Clone(policy.Limits)
 
 	return policy, nil
+}
+
+func validateRefs(refs []string) error {
+	for _, ref := range refs {
+		if ref == "" || strings.HasPrefix(ref, "-") || strings.ContainsAny(ref, "\x00\r\n") {
+			return ErrInvalidPolicy
+		}
+	}
+
+	return nil
+}
+
+func validateToolLimits(limits map[string]dtool.ToolLimit) error {
+	if len(limits) == 0 {
+		return ErrInvalidPolicy
+	}
+
+	for name, limit := range limits {
+		if name != "git.read.blame" && name != "git.read.diff" && name != "git.read.log" && name != "git.read.show" || limit.MaxCalls <= 0 || limit.Timeout <= 0 || limit.MaxRequestBytes < 0 || limit.MaxResultBytes <= 0 {
+			return fmt.Errorf("%w: %s", ErrInvalidPolicy, name)
+		}
+	}
+
+	return nil
 }
 
 func (p Policy) resultLimit(name string) (int, error) {

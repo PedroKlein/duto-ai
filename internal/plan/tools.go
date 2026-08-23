@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/PedroKlein/duto-ai/internal/config"
@@ -42,7 +43,47 @@ func compileWorkflowToolPolicy(cfg *config.Config, workflow *config.Workflow, li
 		return compiledToolPolicy{}, fmt.Errorf("workflow tools: %w", err)
 	}
 
+	if err := validateToolBindings(cfg, scope.Names); err != nil {
+		return compiledToolPolicy{}, fmt.Errorf("trusted tool bindings: %w", err)
+	}
+
 	return compiledToolPolicy{catalog: catalog, profiles: profiles, ceiling: ceiling, scope: scope}, nil
+}
+
+func validateToolBindings(cfg *config.Config, names []string) error {
+	selected := make(map[string]bool)
+
+	for _, name := range names {
+		family, _, _ := strings.Cut(name, ".")
+		selected[family] = true
+	}
+
+	if selected["files"] && (cfg.ToolConfig.Files == nil || !readWorkspaceExists(cfg, cfg.ToolConfig.Files.Workspace)) {
+		return ErrUnsupportedCapability
+	}
+
+	if selected["git"] && (cfg.ToolConfig.Git == nil || !readWorkspaceExists(cfg, cfg.ToolConfig.Git.Workspace)) {
+		return ErrUnsupportedCapability
+	}
+
+	if selected["github"] && cfg.ToolConfig.GitHub == nil {
+		return ErrUnsupportedCapability
+	}
+
+	if selected["web"] && cfg.ToolConfig.Web == nil {
+		return ErrUnsupportedCapability
+	}
+
+	if selected["shell"] && (cfg.ToolConfig.Shell == nil || !readWorkspaceExists(cfg, cfg.ToolConfig.Shell.Workspace)) {
+		return ErrUnsupportedCapability
+	}
+
+	return nil
+}
+
+func readWorkspaceExists(cfg *config.Config, name string) bool {
+	workspace, exists := cfg.Workspaces[name]
+	return exists && workspace.Access == "read" && workspace.Root != ""
 }
 
 func compileTrustedToolLimits(catalog dtool.Catalog, source map[string]config.ToolLimit) (map[string]ToolLimit, error) {

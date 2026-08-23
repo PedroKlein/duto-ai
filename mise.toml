@@ -29,13 +29,13 @@ run = "go vet ./..."
 description = "Run all checks (build + vet + lint + test)"
 depends = ["build", "vet", "lint", "test"]
 
-[tasks.smoke]
-description = "Run smoke tests against the configured live provider"
-run = "go test -tags=smoke ./smoketest/ -v -timeout=5m"
-
 [tasks.integration]
 description = "Run integration tests with mock LLM"
 run = "go test -tags=integration ./... -v -timeout=3m"
+
+[tasks.scenarios]
+description = "Run the exact M1 scenario and forbidden-marker gates"
+run = "go test -race -tags=integration ./internal/runtime -run '^TestScenario' -count=1"
 
 [tasks.tidy]
 description = "Run go mod tidy"

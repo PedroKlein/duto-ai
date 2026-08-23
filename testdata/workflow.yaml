@@ -1,0 +1,30 @@
+version: 1
+name: example
+model: light
+tools: []
+limits:
+  timeout: 1m
+  max_iterations: 2
+  max_model_calls: 2
+  max_tool_calls: 0
+  max_concurrency: 1
+  max_parallel_calls: 1
+  max_artifact_bytes: 0
+steps:
+  - id: report
+    needs: []
+    instruction: Return a typed report.
+    tools: []
+    workspaces: []
+    input:
+      type: object
+      properties: {}
+      required: []
+    with: {}
+    output:
+      type: object
+      properties:
+        outcome: {type: string, enum: [completed]}
+        report: {type: string, max_length: 1024}
+      required: [outcome, report]
+result: {step: report}

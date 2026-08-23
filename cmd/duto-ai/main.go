@@ -17,7 +17,6 @@ import (
 	"github.com/PedroKlein/duto-ai/internal/compiler"
 	"github.com/PedroKlein/duto-ai/internal/config"
 	"github.com/PedroKlein/duto-ai/internal/plan"
-	"github.com/PedroKlein/duto-ai/internal/provider"
 	"github.com/PedroKlein/duto-ai/internal/runtime"
 )
 
@@ -313,7 +312,12 @@ func runAdmittedWorkflow(ctx context.Context, cfg *config.Config, compiled *plan
 		return nil, executionError(errWorkflowInputs)
 	}
 
-	result, err := runtime.Run(ctx, compiled, bundledModelResolver(cfg))
+	registry, err := buildToolRegistry(cfg, compiled)
+	if err != nil {
+		return nil, executionError(err)
+	}
+
+	result, err := runtime.RunWithInputsAndToolsets(ctx, compiled, bundledModelResolver(cfg), registry.FilteredToolset, map[string]any{})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, context.Canceled
@@ -342,7 +346,7 @@ func runAdmittedWorkflow(ctx context.Context, cfg *config.Config, compiled *plan
 func bundledModelResolver(cfg *config.Config) compiler.ModelResolver {
 	var mu sync.Mutex
 
-	providers := make(map[string]*provider.Provider)
+	providers := make(map[string]*bundledProvider)
 	models := make(map[string]model.LLM)
 
 	return func(ctx context.Context, alias string) (model.LLM, error) {
@@ -365,7 +369,7 @@ func bundledModelResolver(cfg *config.Config) compiler.ModelResolver {
 				return nil, errUnknownProvider
 			}
 
-			created, err := provider.NewProvider(ctx, definition)
+			created, err := newBundledProvider(ctx, definition)
 			if err != nil {
 				return nil, errBundledProvider
 			}
@@ -374,7 +378,7 @@ func bundledModelResolver(cfg *config.Config) compiler.ModelResolver {
 			providers[binding.Provider] = bundled
 		}
 
-		llm, err := bundled.Model(binding.Target)
+		llm, err := bundled.model(binding.Target)
 		if err != nil {
 			return nil, errBundledModel
 		}

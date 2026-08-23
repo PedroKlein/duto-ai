@@ -14,6 +14,9 @@ providers:
 models:
   light: {provider: default, target: example-light}
   capable: {provider: default, target: example-capable}
+tool_config:
+  github: {base_url: https://api.example.test, owner: example-owner, repository: example-repository, subject: 1, ref: example-ref, max_pages: 2, max_results: 20}
+  web: {allowed_domains: [example.test], max_redirects: 0}
 `
 
 func TestCompile_NativeAgentPlanIsFiniteAndDeterministic(t *testing.T) {

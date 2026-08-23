@@ -77,6 +77,7 @@ type Config struct {
 	ToolProfiles map[string][]string
 	Tools        []string
 	ToolLimits   map[string]ToolLimit
+	ToolConfig   ToolConfig
 	Evidence     Evidence
 }
 
@@ -95,7 +96,7 @@ func DecodeConfig(name string, data []byte) (*Config, error) {
 		return nil, err
 	}
 
-	fields, err := mappingFields(name, root, "$", "version", "providers", "models", "workspaces", "tool_profiles", "tools", "tool_limits", "evidence")
+	fields, err := mappingFields(name, root, "$", "version", "providers", "models", "workspaces", "tool_profiles", "tools", "tool_limits", "tool_config", "evidence")
 	if err != nil {
 		return nil, err
 	}
@@ -139,6 +140,11 @@ func DecodeConfig(name string, data []byte) (*Config, error) {
 		return nil, err
 	}
 
+	toolConfig, err := decodeToolConfig(name, fields["tool_config"])
+	if err != nil {
+		return nil, err
+	}
+
 	evidence, err := decodeEvidence(name, fields["evidence"])
 	if err != nil {
 		return nil, err
@@ -165,6 +171,7 @@ func DecodeConfig(name string, data []byte) (*Config, error) {
 		ToolProfiles: toolProfiles,
 		Tools:        tools,
 		ToolLimits:   toolLimits,
+		ToolConfig:   toolConfig,
 		Evidence:     evidence,
 	}, nil
 }

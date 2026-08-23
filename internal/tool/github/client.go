@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 
 	dtool "github.com/PedroKlein/duto-ai/internal/tool"
@@ -118,9 +119,12 @@ func validateBinding(policy Policy) error {
 }
 
 func validateLimits(limits map[string]dtool.ToolLimit) error {
-	for _, name := range githubToolNames {
-		limit, ok := limits[name]
-		if !ok || limit.MaxCalls <= 0 || limit.Timeout <= 0 || limit.MaxRequestBytes < 0 || limit.MaxResultBytes <= 0 {
+	if len(limits) == 0 {
+		return ErrInvalidPolicy
+	}
+
+	for name, limit := range limits {
+		if !slices.Contains(githubToolNames, name) || limit.MaxCalls <= 0 || limit.Timeout <= 0 || limit.MaxRequestBytes < 0 || limit.MaxResultBytes <= 0 {
 			return fmt.Errorf("%w: %s", ErrInvalidPolicy, name)
 		}
 	}

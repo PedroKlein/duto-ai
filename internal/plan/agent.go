@@ -297,6 +297,7 @@ func compileNamedAgentStep(source config.Step, allSteps []config.Step, workflowI
 		Input:       definition.Input,
 		Bindings:    bindings,
 		Output:      definition.Output,
+		Retry:       Retry{MaxAttempts: 1},
 		Limits:      definition.Limits,
 	}, nil
 }

@@ -312,7 +312,7 @@ func decodeSteps(name string, node *yaml.Node) ([]Step, error) {
 }
 
 func decodeStep(name string, node *yaml.Node, path string) (Step, error) { //nolint:gocyclo // A step is one closed source record decoded in contract order.
-	fields, err := mappingFields(name, node, path, "id", "needs", "wait", "when", "agent", "instruction", "model", "model_config", "tools", "tool_limits", "skills", "workspaces", "input", "with", "output", "limits")
+	fields, err := mappingFields(name, node, path, "id", "needs", "wait", "when", "agent", "instruction", "model", "model_config", "tools", "tool_limits", "skills", "workspaces", "input", "with", "output", "retry", "limits")
 	if err != nil {
 		return Step{}, err
 	}
@@ -347,7 +347,7 @@ func decodeStep(name string, node *yaml.Node, path string) (Step, error) { //nol
 	}
 
 	if agentName != "" {
-		for _, field := range []string{"instruction", "model", "model_config", "tools", "tool_limits", "skills", "workspaces", "input", "output", "limits"} {
+		for _, field := range []string{"instruction", "model", "model_config", "tools", "tool_limits", "skills", "workspaces", "input", "output", "retry", "limits"} {
 			if fields[field] != nil {
 				return Step{}, diagnostic(name, path+"."+field, fields[field], CodeInvalidValue)
 			}
@@ -413,12 +413,45 @@ func decodeStep(name string, node *yaml.Node, path string) (Step, error) { //nol
 		return Step{}, err
 	}
 
+	retry, err := decodeRetry(name, fields["retry"], path+".retry")
+	if err != nil {
+		return Step{}, err
+	}
+
 	limits, err := decodeOptionalLimits(name, fields["limits"], path+".limits")
 	if err != nil {
 		return Step{}, err
 	}
 
-	return Step{ID: id, Needs: needs, Wait: wait, When: when, Instruction: instruction, Model: model, ModelConfig: modelConfig, Tools: tools, ToolLimits: toolLimits, Skills: skills, Workspaces: workspaces, Input: input, With: bindings, WithOrder: bindingOrder, Output: output, Limits: limits}, nil
+	return Step{ID: id, Needs: needs, Wait: wait, When: when, Instruction: instruction, Model: model, ModelConfig: modelConfig, Tools: tools, ToolLimits: toolLimits, Skills: skills, Workspaces: workspaces, Input: input, With: bindings, WithOrder: bindingOrder, Output: output, Retry: retry, Limits: limits}, nil
+}
+
+func decodeRetry(name string, node *yaml.Node, path string) (Retry, error) {
+	if node == nil {
+		return Retry{}, nil
+	}
+
+	fields, err := mappingFields(name, node, path, "max_attempts", "initial_delay", "max_delay")
+	if err != nil {
+		return Retry{}, err
+	}
+
+	maxAttempts, err := requiredInt(name, fields, "max_attempts", path+".max_attempts")
+	if err != nil {
+		return Retry{}, err
+	}
+
+	initialDelay, err := requiredString(name, fields, "initial_delay", path+".initial_delay")
+	if err != nil {
+		return Retry{}, err
+	}
+
+	maxDelay, err := requiredString(name, fields, "max_delay", path+".max_delay")
+	if err != nil {
+		return Retry{}, err
+	}
+
+	return Retry{MaxAttempts: maxAttempts, InitialDelay: initialDelay, MaxDelay: maxDelay}, nil
 }
 
 func decodeToolExpression(name string, node *yaml.Node, path string) (ToolExpression, error) {

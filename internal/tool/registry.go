@@ -2,7 +2,6 @@ package tool
 
 import (
 	"errors"
-	"maps"
 	"sort"
 	"sync"
 
@@ -40,17 +39,6 @@ func (r *Registry) Get(name string) (adktool.Tool, bool) {
 	t, ok := r.tools[name]
 
 	return t, ok
-}
-
-// All returns all registered tools.
-func (r *Registry) All() map[string]adktool.Tool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	result := make(map[string]adktool.Tool, len(r.tools))
-	maps.Copy(result, r.tools)
-
-	return result
 }
 
 // Names returns all registered tool names sorted alphabetically.

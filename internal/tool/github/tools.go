@@ -32,6 +32,10 @@ func RegisterAll(registry *dtool.Registry, client *Client) error {
 	}
 
 	for _, current := range tools {
+		if _, selected := client.limits[current.name]; !selected {
+			continue
+		}
+
 		created, err := current.create()
 		if err != nil {
 			return fmt.Errorf("creating tool %s: %w", current.name, err)

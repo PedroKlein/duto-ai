@@ -56,6 +56,12 @@ type ModelConfig struct {
 	MaxOutputTokens *int     `json:"max_output_tokens,omitempty"`
 }
 
+type Retry struct {
+	MaxAttempts  int    `json:"max_attempts"`
+	InitialDelay string `json:"initial_delay,omitempty"`
+	MaxDelay     string `json:"max_delay,omitempty"`
+}
+
 type Limits struct {
 	Timeout          string `json:"timeout"`
 	MaxIterations    int    `json:"max_iterations"`
@@ -113,6 +119,7 @@ type Step struct {
 	Input       Schema        `json:"input"`
 	Bindings    []Binding     `json:"bindings"`
 	Output      Schema        `json:"output"`
+	Retry       Retry         `json:"retry"`
 	Limits      Limits        `json:"limits"`
 }
 
@@ -462,6 +469,11 @@ func compileSteps(workflow *config.Workflow, workflowInputs []Property, workflow
 			return nil, fmt.Errorf("step %q conditions: %w", source.ID, err)
 		}
 
+		retry, err := compileRetry(source.Retry, tools)
+		if err != nil {
+			return nil, fmt.Errorf("step %q retry: %w", source.ID, err)
+		}
+
 		steps = append(steps, Step{
 			ID:          source.ID,
 			Needs:       slices.Clone(source.Needs),
@@ -475,6 +487,7 @@ func compileSteps(workflow *config.Workflow, workflowInputs []Property, workflow
 			Input:       input,
 			Bindings:    bindings,
 			Output:      output,
+			Retry:       retry,
 			Limits:      limits,
 		})
 	}
@@ -684,6 +697,35 @@ func normalizedTimeout(value string) (string, error) {
 	}
 
 	return duration.String(), nil
+}
+
+func compileRetry(source config.Retry, tools ToolScope) (Retry, error) {
+	if source.MaxAttempts == 0 {
+		return Retry{MaxAttempts: 1}, nil
+	}
+
+	if source.MaxAttempts < 1 || source.InitialDelay == "" || source.MaxDelay == "" {
+		return Retry{}, ErrInvalidLimits
+	}
+
+	initialDelay, err := normalizedTimeout(source.InitialDelay)
+	if err != nil {
+		return Retry{}, err
+	}
+
+	maxDelay, err := normalizedTimeout(source.MaxDelay)
+	if err != nil {
+		return Retry{}, err
+	}
+
+	initialDuration, _ := time.ParseDuration(initialDelay)
+
+	maxDuration, _ := time.ParseDuration(maxDelay)
+	if maxDuration < initialDuration || source.MaxAttempts > 1 && unsafeToolScope(tools) {
+		return Retry{}, ErrInvalidLimits
+	}
+
+	return Retry{MaxAttempts: source.MaxAttempts, InitialDelay: initialDelay, MaxDelay: maxDelay}, nil
 }
 
 func narrowedLimit(requested, parent int) (int, error) {

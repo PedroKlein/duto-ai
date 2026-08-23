@@ -59,16 +59,8 @@ jobs:
       - name: Build binary
         run: go build -o duto-ai ./cmd/duto-ai
 
-      - name: Dry-run validation
-        run: |
-          ./duto-ai run --dry-run \
-            --config internal/runtime/testdata/integration_config.yaml \
-            internal/runtime/testdata/integration_workflow.yaml
-
-      - name: Verify --output-format flag
+      - name: Verify CLI contract
         run: |
           ./duto-ai version
-          ./duto-ai run --dry-run \
-            --config internal/runtime/testdata/integration_config.yaml \
-            --output-format json \
-            internal/runtime/testdata/integration_workflow.yaml
+          ./duto-ai validate --format json --config testdata/config.yaml testdata/workflow.yaml
+          ./duto-ai plan --format json --config testdata/config.yaml testdata/workflow.yaml

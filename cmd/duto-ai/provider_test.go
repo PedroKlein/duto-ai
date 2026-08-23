@@ -1,4 +1,4 @@
-package provider_test
+package main
 
 import (
 	"context"
@@ -14,16 +14,15 @@ import (
 	"google.golang.org/genai"
 
 	"github.com/PedroKlein/duto-ai/internal/config"
-	"github.com/PedroKlein/duto-ai/internal/provider"
 )
 
-func TestNewLLM_UnknownType(t *testing.T) {
+func TestNewProvider_UnknownType(t *testing.T) {
 	cfg := config.Provider{
 		Type:   "unknown",
 		Config: map[string]string{},
 	}
 
-	_, err := provider.NewLLM(context.Background(), cfg, "model")
+	_, err := newBundledProvider(context.Background(), cfg)
 	if err == nil {
 		t.Fatal("expected error for unknown provider type")
 	}
@@ -110,9 +109,14 @@ func TestBundledProvider_ADKv22Request(t *testing.T) {
 		},
 	}
 
-	llm, err := provider.NewLLM(t.Context(), cfg, "example-model")
+	bundled, err := newBundledProvider(t.Context(), cfg)
 	if err != nil {
-		t.Fatalf("provider.NewLLM: %v", err)
+		t.Fatalf("newBundledProvider: %v", err)
+	}
+
+	llm, err := bundled.model("example-model")
+	if err != nil {
+		t.Fatalf("bundledProvider.model: %v", err)
 	}
 
 	req := &model.LLMRequest{

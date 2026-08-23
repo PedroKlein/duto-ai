@@ -17,6 +17,14 @@ providers:
   default: {type: custom-provider, config: {credential: canary}}
 models:
   light: {provider: default, target: example-model}
+workspaces:
+  source: {root: ., access: read}
+tool_config:
+  files: {workspace: source}
+  git: {workspace: source, refs: [HEAD], allow_working_tree: true, max_log_count: 20}
+  github: {base_url: https://api.example.test, owner: example-owner, repository: example-repository, subject: 1, ref: example-ref, max_pages: 2, max_results: 20}
+  web: {allowed_domains: [example.test], max_redirects: 0}
+  shell: {executable: /bin/echo, args: [], workspace: source, environment: {}, max_stdout_bytes: 256, max_stderr_bytes: 256}
 tools: [files.*, git.read.*, github.read.*, web.fetch, shell.run]
 tool_profiles:
   source-review: [files.grep, git.read.*]

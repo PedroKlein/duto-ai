@@ -87,6 +87,10 @@ func RegisterAll(reg *dtool.Registry, policy Policy) error {
 	}
 
 	for _, t := range tools {
+		if _, selected := policy.Limits[t.name]; !selected {
+			continue
+		}
+
 		adkTool, err := t.create()
 		if err != nil {
 			return fmt.Errorf("creating tool %s: %w", t.name, err)
@@ -108,9 +112,12 @@ func normalizePolicy(policy Policy) (Policy, error) {
 		return Policy{}, fmt.Errorf("closing file tool root: %w", err)
 	}
 
-	for _, name := range []string{"files.find", "files.grep", "files.read"} {
-		limit, exists := policy.Limits[name]
-		if !exists || limit.MaxCalls <= 0 || limit.Timeout <= 0 || limit.MaxRequestBytes < 0 || limit.MaxResultBytes <= 0 {
+	if len(policy.Limits) == 0 {
+		return Policy{}, ErrInvalidPolicy
+	}
+
+	for name, limit := range policy.Limits {
+		if name != "files.find" && name != "files.grep" && name != "files.read" || limit.MaxCalls <= 0 || limit.Timeout <= 0 || limit.MaxRequestBytes < 0 || limit.MaxResultBytes <= 0 {
 			return Policy{}, fmt.Errorf("%w: %s", ErrInvalidPolicy, name)
 		}
 	}

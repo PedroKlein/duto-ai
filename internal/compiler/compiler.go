@@ -175,7 +175,12 @@ func buildStepNodes(ctx context.Context, source plan.Workflow, resolve ModelReso
 			return nil, nil, fmt.Errorf("parsing step timeout: %w", err)
 		}
 
-		node, err := workflow.NewAgentNodeWithSchemas(stepAgent, toJSONSchema(step.Input), toJSONSchema(step.Output), workflow.NodeConfig{Timeout: timeout})
+		nodeConfig, err := stepNodeConfig(step, timeout)
+		if err != nil {
+			return nil, nil, fmt.Errorf("building step %q retry: %w", step.ID, err)
+		}
+
+		node, err := workflow.NewAgentNodeWithSchemas(stepAgent, toJSONSchema(step.Input), toJSONSchema(step.Output), nodeConfig)
 		if err != nil {
 			return nil, nil, fmt.Errorf("creating workflow node: %w", err)
 		}
@@ -186,6 +191,35 @@ func buildStepNodes(ctx context.Context, source plan.Workflow, resolve ModelReso
 	}
 
 	return nodes, agents, nil
+}
+
+func stepNodeConfig(step plan.Step, timeout time.Duration) (workflow.NodeConfig, error) {
+	result := workflow.NodeConfig{Timeout: timeout}
+	if step.Retry.MaxAttempts <= 1 {
+		return result, nil
+	}
+
+	initialDelay, err := time.ParseDuration(step.Retry.InitialDelay)
+	if err != nil {
+		return workflow.NodeConfig{}, fmt.Errorf("parsing initial retry delay: %w", err)
+	}
+
+	maxDelay, err := time.ParseDuration(step.Retry.MaxDelay)
+	if err != nil {
+		return workflow.NodeConfig{}, fmt.Errorf("parsing maximum retry delay: %w", err)
+	}
+
+	result.RetryConfig = &workflow.RetryConfig{
+		MaxAttempts:   step.Retry.MaxAttempts,
+		InitialDelay:  initialDelay,
+		MaxDelay:      maxDelay,
+		BackoffFactor: 2,
+		ShouldRetry: func(err error) bool {
+			return errors.Is(err, context.DeadlineExceeded)
+		},
+	}
+
+	return result, nil
 }
 
 func buildEdges(source plan.Workflow, inputNode workflow.Node, stepNodes map[string]workflow.Node) ([]workflow.Edge, error) {

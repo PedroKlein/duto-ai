@@ -148,7 +148,7 @@ func validateDecodedWorkflow(name string, workflow *Workflow, rootFields map[str
 
 	ids := make(map[string]int, len(workflow.Steps))
 	for i, step := range workflow.Steps {
-		stepFields, err := mappingFields(name, stepsNode.Content[i], fmt.Sprintf("$.steps[%d]", i), "id", "needs", "wait", "when", "agent", "instruction", "model", "model_config", "tools", "tool_limits", "skills", "workspaces", "input", "with", "output", "limits")
+		stepFields, err := mappingFields(name, stepsNode.Content[i], fmt.Sprintf("$.steps[%d]", i), "id", "needs", "wait", "when", "agent", "instruction", "model", "model_config", "tools", "tool_limits", "skills", "workspaces", "input", "with", "output", "retry", "limits")
 		if err != nil {
 			return err
 		}
