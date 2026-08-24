@@ -18,10 +18,34 @@ inputs:
     required: false
     default: "7"
 
+outputs:
+  status:
+    description: Typed runtime status.
+    value: ${{ steps.project.outputs.status }}
+  outcome:
+    description: Typed runtime outcome.
+    value: ${{ steps.project.outputs.outcome }}
+  run-id:
+    description: Typed runtime run identifier.
+    value: ${{ steps.project.outputs['run-id'] }}
+  result-path:
+    description: Local path to the typed result when available.
+    value: ${{ steps.project.outputs['result-path'] }}
+  evidence-path:
+    description: Local path to the redacted Action evidence bundle.
+    value: ${{ steps.project.outputs['evidence-path'] }}
+  failed-step:
+    description: Failed step identifier when available.
+    value: ${{ steps.project.outputs['failed-step'] }}
+  clarification-required:
+    description: Boolean signal for awaiting-input outcomes.
+    value: ${{ steps.project.outputs['clarification-required'] }}
+
 runs:
   using: composite
   steps:
     - name: Prepare trusted workflow inputs
+      id: prepare
       shell: bash
       env:
         GITHUB_EVENT_NAME: ${{ github.event_name }}
@@ -38,5 +62,42 @@ runs:
       run: bash "${{ github.action_path }}/action/prepare.sh"
 
     - name: Run duto-ai
+      id: run
       shell: bash
+      continue-on-error: true
+      env:
+        DUTO_ACTION_RESULT_FILE: ${{ runner.temp }}/duto-action-result.json
+        DUTO_ACTION_RUNTIME_EVIDENCE_DIR: ${{ runner.temp }}/duto-runtime-evidence
       run: bash "${{ github.action_path }}/action/run.sh"
+
+    - name: Project Action outputs and redacted evidence
+      id: project
+      if: always()
+      shell: bash
+      env:
+        DUTO_ACTION_RESULT_FILE: ${{ runner.temp }}/duto-action-result.json
+        DUTO_ACTION_RUNTIME_EVIDENCE_DIR: ${{ runner.temp }}/duto-runtime-evidence
+        DUTO_ACTION_ACTION_EVIDENCE_DIR: ${{ runner.temp }}/duto-action-evidence
+        DUTO_ACTION_WORKFLOW_DIGEST_PREFIX: ${{ github.workflow_sha }}
+      run: bash "${{ github.action_path }}/action/project.sh"
+
+    - name: Upload redacted Action evidence
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: ${{ env.DUTO_ACTION_ARTIFACT_NAME }}
+        path: ${{ env.DUTO_ACTION_ACTION_EVIDENCE_DIR }}
+        retention-days: ${{ inputs.evidence-retention-days }}
+        if-no-files-found: error
+
+    - name: Restore duto-ai exit
+      if: always()
+      shell: bash
+      run: |
+        set -euo pipefail
+        code="${DUTO_ACTION_RUN_EXIT_CODE:-1}"
+        if [[ ! "$code" =~ ^[0-9]+$ ]]; then
+          echo "error: DUTO_ACTION_RUN_EXIT_CODE is invalid" >&2
+          exit 1
+        fi
+        exit "$code"

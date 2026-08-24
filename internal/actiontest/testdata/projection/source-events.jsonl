@@ -1,0 +1,2 @@
+{"type":"adk.event","class":"message","status":"succeeded","payload":{"text_digest":"abc123"}}
+{"type":"adk.event","class":"tool","status":"failed","payload":{"diagnostic":"DIAGNOSTIC_SECRET_CANARY_DO_NOT_LEAK"}}

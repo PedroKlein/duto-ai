@@ -1,0 +1,8 @@
+{
+  "run_id": "run-failure-canary",
+  "status": "failed",
+  "outcome": "completed",
+  "output": {
+    "report": "OUTPUT_CANARY_DO_NOT_LEAK"
+  }
+}

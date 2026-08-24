@@ -1,0 +1,13 @@
+{
+  "version": "duto.result/v1",
+  "run_id": "run-failure-canary",
+  "workflow": "projection-workflow",
+  "status": "failed",
+  "outcome": "completed",
+  "started_at": "2026-08-26T10:00:00Z",
+  "finished_at": "2026-08-26T10:00:01Z",
+  "failed_step": "compile",
+  "output": {
+    "message": "OUTPUT_CANARY_DO_NOT_LEAK"
+  }
+}

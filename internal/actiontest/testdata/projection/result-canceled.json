@@ -1,0 +1,12 @@
+{
+  "version": "duto.result/v1",
+  "run_id": "run-canceled-canary",
+  "workflow": "projection-workflow",
+  "status": "cancelled",
+  "outcome": "no_action",
+  "started_at": "2026-08-26T10:00:00Z",
+  "finished_at": "2026-08-26T10:00:03Z",
+  "output": {
+    "message": "TOOL_CANARY_DO_NOT_LEAK"
+  }
+}

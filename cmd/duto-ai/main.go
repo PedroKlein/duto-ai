@@ -223,6 +223,13 @@ func newRunCommand(dependencies commandDependencies) *cobra.Command {
 
 			output, err := dependencies.run(command.Context(), cfg, compiled, inputs, format)
 			if err != nil {
+				exitCode := codeForError(err)
+				if len(output) != 0 && (exitCode == exitExecution || exitCode == exitCancelled) {
+					if writeErr := writePayload(command.OutOrStdout(), output); writeErr != nil {
+						return writeErr
+					}
+				}
+
 				return err
 			}
 
@@ -450,18 +457,32 @@ func runAdmittedWorkflow(ctx context.Context, cfg *config.Config, compiled *plan
 	}
 
 	result, err := runtime.RunWithInputsAndToolsets(ctx, compiled, bundledModelResolver(cfg), registry.FilteredToolset, inputs)
+
+	output, encodeErr := formatRunResult(result, format)
+	if encodeErr != nil {
+		return nil, internalError(encodeErr)
+	}
+
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return nil, context.Canceled
+			return output, context.Canceled
 		}
 
-		return nil, executionError(err)
+		return output, executionError(err)
+	}
+
+	return output, nil
+}
+
+func formatRunResult(result *runtime.Result, format outputFormat) ([]byte, error) {
+	if result == nil {
+		return nil, nil
 	}
 
 	if format == formatJSON {
-		output, encodeErr := result.JSON()
-		if encodeErr != nil {
-			return nil, internalError(encodeErr)
+		output, err := result.JSON()
+		if err != nil {
+			return nil, fmt.Errorf("encoding JSON result: %w", err)
 		}
 
 		return output, nil
@@ -469,7 +490,7 @@ func runAdmittedWorkflow(ctx context.Context, cfg *config.Config, compiled *plan
 
 	output, err := result.Text()
 	if err != nil {
-		return nil, internalError(err)
+		return nil, fmt.Errorf("encoding text result: %w", err)
 	}
 
 	return output, nil

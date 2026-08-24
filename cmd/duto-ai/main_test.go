@@ -345,6 +345,32 @@ func TestCLIRunExitClasses(t *testing.T) {
 	}
 }
 
+func TestCLIRunExitClassesWithTypedResult(t *testing.T) {
+	configPath, workflowPath := writeNoInputInputs(t)
+
+	tests := []struct {
+		name       string
+		runErr     error
+		wantCode   int
+		wantStdout string
+		wantStderr string
+	}{
+		{name: "execution", runErr: executionError(errors.New("step stopped")), wantCode: exitExecution, wantStdout: "{\"version\":1,\"status\":\"failed\"}\n", wantStderr: "error: step stopped\n"},
+		{name: "cancellation", runErr: context.Canceled, wantCode: exitCancelled, wantStdout: "{\"version\":1,\"status\":\"failed\"}\n", wantStderr: "error: context canceled\n"},
+		{name: "internal", runErr: errors.New("broken invariant"), wantCode: exitInternal, wantStdout: "", wantStderr: "error: broken invariant\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			run := func(context.Context, *config.Config, *plan.Plan, map[string]any, outputFormat) ([]byte, error) {
+				return []byte(`{"version":1,"status":"failed"}`), test.runErr
+			}
+
+			code, stdout, stderr := executeForTest(t, []string{"run", "--config", configPath, workflowPath}, bytes.NewReader(nil), run)
+			assertCommandResult(t, code, stdout, stderr, test.wantCode, test.wantStdout, test.wantStderr)
+		})
+	}
+}
+
 func TestBundledModelResolver_RedactsTrustedBindingFailure(t *testing.T) {
 	cfg, _ := decodeInputs(t)
 

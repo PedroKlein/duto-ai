@@ -1,0 +1,10 @@
+{
+  "schema_version": "duto-m1-evidence-manifest/v1",
+  "files": {
+    "events.jsonl": {"sha256": "deadbeef", "size": 1},
+    "result.json": {"sha256": "deadbeef", "size": 1},
+    "summary.md": {"sha256": "deadbeef", "size": 1},
+    "manifest.json": {"sha256": "deadbeef", "size": 1}
+  },
+  "note": "TOOL_CANARY_DO_NOT_LEAK"
+}

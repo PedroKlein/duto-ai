@@ -1,0 +1,15 @@
+{
+  "version": "duto.result/v1",
+  "run_id": "run-awaiting-input-canary",
+  "workflow": "projection-workflow",
+  "status": "succeeded",
+  "outcome": "awaiting_input",
+  "started_at": "2026-08-26T10:00:00Z",
+  "finished_at": "2026-08-26T10:00:02Z",
+  "output": {
+    "message": "PROMPT_CANARY_DO_NOT_LEAK",
+    "questions": [
+      "DIAGNOSTIC_SECRET_CANARY_DO_NOT_LEAK"
+    ]
+  }
+}
