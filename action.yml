@@ -44,6 +44,19 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Install duto-ai
+      id: install
+      shell: bash
+      env:
+        RUNNER_OS: ${{ runner.os }}
+        RUNNER_ARCH: ${{ runner.arch }}
+        RUNNER_TEMP: ${{ runner.temp }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_API_URL: ${{ github.api_url }}
+        GITHUB_TOKEN: ${{ github.token }}
+        INPUT_VERSION: ${{ inputs.version }}
+      run: bash "${{ github.action_path }}/action/install.sh"
+
     - name: Prepare trusted workflow inputs
       id: prepare
       shell: bash
@@ -71,7 +84,7 @@ runs:
         GITHUB_TOKEN: ${{ github.token }}
         DUTO_ACTION_RESULT_FILE: ${{ runner.temp }}/duto-action-result.json
         DUTO_ACTION_RUNTIME_EVIDENCE_DIR: ${{ runner.temp }}/duto-runtime-evidence
-      run: bash "${{ github.action_path }}/action/run.sh"
+      run: bash "${{ github.action_path }}/action/run.sh" "${{ env.DUTO_ACTION_BIN }}"
 
     - name: Project Action outputs and redacted evidence
       id: project
@@ -85,6 +98,7 @@ runs:
       run: bash "${{ github.action_path }}/action/project.sh"
 
     - name: Upload redacted Action evidence
+      id: upload
       if: always()
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:
@@ -94,6 +108,7 @@ runs:
         if-no-files-found: error
 
     - name: Restore duto-ai exit
+      id: final-exit
       if: always()
       shell: bash
       run: |

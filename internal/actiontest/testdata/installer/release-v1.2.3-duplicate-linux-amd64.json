@@ -1,0 +1,45 @@
+{
+  "tag_name": "v1.2.3",
+  "assets": [
+    {
+      "id": 101,
+      "name": "duto-ai_linux_amd64.tar.gz",
+      "size": 138,
+      "url": "https://api.example.invalid/repos/example-org/demo-repo/releases/assets/101",
+      "browser_download_url": "https://downloads.example.invalid/duto-ai_linux_amd64.tar.gz",
+      "digest": "sha256:659e537c31672c7332ab980d32c4e1faa1d6548108d21ec22fb08f7e0bb3b6d8"
+    },
+    {
+      "id": 102,
+      "name": "duto-ai_linux_arm64.tar.gz",
+      "size": 138,
+      "url": "https://api.example.invalid/repos/example-org/demo-repo/releases/assets/102",
+      "browser_download_url": "https://downloads.example.invalid/duto-ai_linux_arm64.tar.gz",
+      "digest": "sha256:b952dd0b327c747185012887e230d44f9b666acecc498bd8f59ad79f55a574a4"
+    },
+    {
+      "id": 103,
+      "name": "duto-ai_darwin_amd64.tar.gz",
+      "size": 140,
+      "url": "https://api.example.invalid/repos/example-org/demo-repo/releases/assets/103",
+      "browser_download_url": "https://downloads.example.invalid/duto-ai_darwin_amd64.tar.gz",
+      "digest": "sha256:8d4043148f0083d6fd7e9bfab07a1ff2b6dc55067f4314c8f5112579540d2ea7"
+    },
+    {
+      "id": 104,
+      "name": "duto-ai_darwin_arm64.tar.gz",
+      "size": 140,
+      "url": "https://api.example.invalid/repos/example-org/demo-repo/releases/assets/104",
+      "browser_download_url": "https://downloads.example.invalid/duto-ai_darwin_arm64.tar.gz",
+      "digest": "sha256:9d765fd48722ca26042ea8f1f87d99d080c06486e1496b458d16ef7e675232c1"
+    },
+    {
+      "id": 201,
+      "name": "duto-ai_linux_amd64.tar.gz",
+      "size": 138,
+      "url": "https://api.example.invalid/repos/example-org/demo-repo/releases/assets/201",
+      "browser_download_url": "https://downloads.example.invalid/duto-ai_linux_amd64.tar.gz",
+      "digest": "sha256:659e537c31672c7332ab980d32c4e1faa1d6548108d21ec22fb08f7e0bb3b6d8"
+    }
+  ]
+}
