@@ -143,19 +143,70 @@ func TestCLIPlanFormats(t *testing.T) {
 }
 
 func TestCLIRunUsesAdmittedPlan(t *testing.T) {
-	configPath, workflowPath := writeInputs(t)
+	configPath, workflowPath := writeNoInputInputs(t)
 	calls := 0
-	run := func(_ context.Context, cfg *config.Config, compiled *plan.Plan, format outputFormat) ([]byte, error) {
+	run := func(_ context.Context, cfg *config.Config, compiled *plan.Plan, inputs map[string]any, format outputFormat) ([]byte, error) {
 		calls++
 
-		if cfg.Version != 1 || compiled.Snapshot().Workflow.Name != "cli-test" || compiled.Digest() == "" || format != formatJSON {
+		if cfg.Version != 1 || compiled.Snapshot().Workflow.Name != "cli-run" || compiled.Digest() == "" || format != formatJSON {
 			return nil, errors.New("invalid admitted inputs")
+		}
+
+		if len(inputs) != 0 {
+			return nil, errors.New("unexpected run inputs")
 		}
 
 		return []byte(`{"version":1,"status":"succeeded"}`), nil
 	}
 
 	code, stdout, stderr := executeForTest(t, []string{"run", "--format", "json", "--config", configPath, workflowPath}, bytes.NewReader(nil), run)
+
+	assertCommandResult(t, code, stdout, stderr, exitSuccess, "{\"version\":1,\"status\":\"succeeded\"}\n", "")
+
+	if calls != 1 {
+		t.Fatalf("run calls = %d, want 1", calls)
+	}
+}
+
+func TestCLIRun_RequiresInputsFlagWhenWorkflowDeclaresInputs(t *testing.T) {
+	configPath, workflowPath := writeInputs(t)
+	calls := 0
+	run := func(context.Context, *config.Config, *plan.Plan, map[string]any, outputFormat) ([]byte, error) {
+		calls++
+
+		return []byte(`{"version":1,"status":"succeeded"}`), nil
+	}
+
+	code, stdout, stderr := executeForTest(t, []string{"run", "--format", "json", "--config", configPath, workflowPath}, bytes.NewReader(nil), run)
+
+	assertCommandResult(t, code, stdout, stderr, exitAdmission, "", "error: workflow inputs require --inputs FILE\n")
+
+	if calls != 0 {
+		t.Fatalf("run calls = %d, want 0", calls)
+	}
+}
+
+func TestCLIRun_PassesInputsFileToRuntime(t *testing.T) {
+	configPath, workflowPath := writeInputs(t)
+
+	inputsPath := filepath.Join(t.TempDir(), "inputs.json")
+	if err := os.WriteFile(inputsPath, []byte(`{"objective":"ship"}`), 0o600); err != nil {
+		t.Fatalf("WriteFile(inputs) error = %v", err)
+	}
+
+	calls := 0
+	run := func(_ context.Context, _ *config.Config, _ *plan.Plan, inputs map[string]any, _ outputFormat) ([]byte, error) {
+		calls++
+
+		objective, _ := inputs["objective"].(string)
+		if objective != "ship" {
+			return nil, fmt.Errorf("objective = %q", objective)
+		}
+
+		return []byte(`{"version":1,"status":"succeeded"}`), nil
+	}
+
+	code, stdout, stderr := executeForTest(t, []string{"run", "--format", "json", "--config", configPath, "--inputs", inputsPath, workflowPath}, bytes.NewReader(nil), run)
 
 	assertCommandResult(t, code, stdout, stderr, exitSuccess, "{\"version\":1,\"status\":\"succeeded\"}\n", "")
 
@@ -172,10 +223,10 @@ func TestRunAdmittedWorkflow_RejectsRequiredInputsBeforeProviderConstruction(t *
 		t.Fatalf("plan.Compile() error = %v", err)
 	}
 
-	_, err = runAdmittedWorkflow(t.Context(), cfg, compiled, formatJSON)
+	_, err = runAdmittedWorkflow(t.Context(), cfg, compiled, map[string]any{}, formatJSON)
 
 	var commandErr *commandError
-	if !errors.As(err, &commandErr) || commandErr.code != exitExecution || !errors.Is(err, errWorkflowInputs) {
+	if !errors.As(err, &commandErr) || commandErr.code != exitExecution || !errors.Is(err, compiler.ErrInvalidInput) {
 		t.Fatalf("runAdmittedWorkflow() error = %v", err)
 	}
 }
@@ -183,7 +234,7 @@ func TestRunAdmittedWorkflow_RejectsRequiredInputsBeforeProviderConstruction(t *
 func TestCLIRunFakeModelJSON(t *testing.T) {
 	configPath, workflowPath := writeNoInputInputs(t)
 	llm := mockllm.New(mockllm.Response{Text: `{"outcome":"completed","report":"cli"}`})
-	run := func(ctx context.Context, _ *config.Config, compiled *plan.Plan, format outputFormat) ([]byte, error) {
+	run := func(ctx context.Context, _ *config.Config, compiled *plan.Plan, _ map[string]any, format outputFormat) ([]byte, error) {
 		resolver := func(context.Context, string) (model.LLM, error) { return llm, nil }
 
 		result, err := runtime.Run(ctx, compiled, compiler.ModelResolver(resolver))
@@ -220,7 +271,7 @@ func TestCLIRejectsV02FlagsBeforeRun(t *testing.T) {
 	for _, legacyFlag := range legacyFlags {
 		t.Run(legacyFlag, func(t *testing.T) {
 			calls := 0
-			run := func(context.Context, *config.Config, *plan.Plan, outputFormat) ([]byte, error) {
+			run := func(context.Context, *config.Config, *plan.Plan, map[string]any, outputFormat) ([]byte, error) {
 				calls++
 				return nil, nil
 			}
@@ -270,7 +321,7 @@ func TestCLIAdmissionError(t *testing.T) {
 }
 
 func TestCLIRunExitClasses(t *testing.T) {
-	configPath, workflowPath := writeInputs(t)
+	configPath, workflowPath := writeNoInputInputs(t)
 
 	tests := []struct {
 		name       string
@@ -284,7 +335,7 @@ func TestCLIRunExitClasses(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			run := func(context.Context, *config.Config, *plan.Plan, outputFormat) ([]byte, error) {
+			run := func(context.Context, *config.Config, *plan.Plan, map[string]any, outputFormat) ([]byte, error) {
 				return nil, test.runErr
 			}
 

@@ -1,0 +1,9 @@
+version: 1
+providers:
+  default:
+    type: custom-provider
+    config: {}
+models:
+  light:
+    provider: default
+    target: example-model

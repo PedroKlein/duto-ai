@@ -12,7 +12,10 @@ import (
 
 func TestScenarioForbiddenV02ExecutableMarkers(t *testing.T) {
 	root := filepath.Clean(filepath.Join("..", ".."))
-	for _, removed := range []string{"action.yml", ".github/ai-workflows", "smoketest"} {
+	if _, err := os.Stat(filepath.Join(root, "action.yml")); err != nil {
+		t.Fatalf("missing M2 action path: %v", err)
+	}
+	for _, removed := range []string{".github/ai-workflows", "smoketest"} {
 		if _, err := os.Stat(filepath.Join(root, removed)); !os.IsNotExist(err) {
 			t.Errorf("superseded v0.2 path still exists: %s", removed)
 		}

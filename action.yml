@@ -1,0 +1,26 @@
+name: duto-ai
+
+description: Run one admitted duto-ai workflow through the official composite adapter.
+
+inputs:
+  workflow:
+    description: Relative workflow path under GITHUB_WORKSPACE.
+    required: true
+  config:
+    description: Relative trusted config path under GITHUB_WORKSPACE.
+    required: false
+    default: duto.yaml
+  version:
+    description: Exact duto-ai release tag in vMAJOR.MINOR.PATCH form.
+    required: true
+  evidence-retention-days:
+    description: Retention days for the uploaded redacted Action evidence bundle.
+    required: false
+    default: "7"
+
+runs:
+  using: composite
+  steps:
+    - name: Run duto-ai
+      shell: bash
+      run: bash "${{ github.action_path }}/action/run.sh"

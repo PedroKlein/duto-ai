@@ -1,0 +1,35 @@
+version: 1
+name: no-tools-input-example
+model: light
+tools: []
+limits:
+  timeout: 1m
+  max_iterations: 2
+  max_model_calls: 2
+  max_tool_calls: 0
+  max_concurrency: 1
+  max_parallel_calls: 1
+  max_artifact_bytes: 0
+inputs:
+  objective:
+    schema: {type: string, max_length: 128}
+steps:
+  - id: report
+    needs: []
+    instruction: Return the objective.
+    tools: []
+    workspaces: []
+    input:
+      type: object
+      properties:
+        objective: {type: string, max_length: 128}
+      required: [objective]
+    with:
+      objective: {input: objective}
+    output:
+      type: object
+      properties:
+        outcome: {type: string, enum: [completed]}
+        report: {type: string, max_length: 256}
+      required: [outcome, report]
+result: {step: report}

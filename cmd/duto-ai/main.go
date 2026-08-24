@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/adk/v2/model"
@@ -44,17 +46,24 @@ var (
 )
 
 var (
-	errCommandRequired   = errors.New("command is required")
-	errEmptyPayload      = errors.New("empty command payload")
-	errInvalidFormat     = errors.New("invalid format")
-	errRunUnavailable    = errors.New("workflow execution is unavailable")
-	errUnknownCommand    = errors.New("unknown command")
-	errWorkflowNeeded    = errors.New("workflow is required")
-	errUnknownModelAlias = errors.New("unknown admitted model alias")
-	errUnknownProvider   = errors.New("unknown admitted provider binding")
-	errBundledProvider   = errors.New("creating bundled provider")
-	errBundledModel      = errors.New("creating bundled model")
-	errWorkflowInputs    = errors.New("workflow requires host-supplied inputs unavailable in the CLI")
+	errCommandRequired        = errors.New("command is required")
+	errEmptyPayload           = errors.New("empty command payload")
+	errInvalidFormat          = errors.New("invalid format")
+	errRunUnavailable         = errors.New("workflow execution is unavailable")
+	errUnknownCommand         = errors.New("unknown command")
+	errWorkflowNeeded         = errors.New("workflow is required")
+	errUnknownModelAlias      = errors.New("unknown admitted model alias")
+	errUnknownProvider        = errors.New("unknown admitted provider binding")
+	errBundledProvider        = errors.New("creating bundled provider")
+	errBundledModel           = errors.New("creating bundled model")
+	errInputsRequired         = errors.New("workflow inputs require --inputs FILE")
+	errInputsStdin            = errors.New("--inputs=- is invalid; stdin is reserved for workflow '-' input")
+	errInputsPath             = errors.New("inputs file path is required")
+	errInputsRegularFile      = errors.New("inputs file must be a regular file")
+	errInputsInvalidUTF8      = errors.New("inputs file is not valid UTF-8")
+	errInputsObjectRoot       = errors.New("inputs JSON root must be an object")
+	errInputsTrailingDocument = errors.New("inputs JSON has a trailing document")
+	errInputsTrailingToken    = errors.New("inputs JSON has a trailing token")
 )
 
 type outputFormat string
@@ -64,7 +73,7 @@ const (
 	formatJSON outputFormat = "json"
 )
 
-type runWorkflow func(context.Context, *config.Config, *plan.Plan, outputFormat) ([]byte, error)
+type runWorkflow func(context.Context, *config.Config, *plan.Plan, map[string]any, outputFormat) ([]byte, error)
 
 type commandDependencies struct {
 	stdin  io.Reader
@@ -178,12 +187,14 @@ func newOperationCommand(name string, payload admissionPayload) *cobra.Command {
 
 func newRunCommand(dependencies commandDependencies) *cobra.Command {
 	var (
-		configPath  string
-		formatValue string
+		configPath        string
+		formatValue       string
+		inputsPath        string
+		evidenceDirectory string
 	)
 
 	command := &cobra.Command{
-		Use:          commandRun + " [--config FILE] [--format text|json] WORKFLOW|-",
+		Use:          commandRun + " [--config FILE] [--format text|json] [--inputs FILE] [--evidence-directory DIR] WORKFLOW|-",
 		Args:         workflowArgs,
 		SilenceUsage: true,
 		RunE: func(command *cobra.Command, args []string) error {
@@ -192,16 +203,25 @@ func newRunCommand(dependencies commandDependencies) *cobra.Command {
 				return usageError(err)
 			}
 
-			cfg, compiled, err := admit(configPath, args[0], command.InOrStdin())
+			cfg, compiled, err := admitRun(configPath, args[0], evidenceDirectory, command.InOrStdin())
 			if err != nil {
 				return admissionError(err)
+			}
+
+			inputs, hasInputsFile, err := loadRunInputs(inputsPath, command.Flags().Changed("inputs"))
+			if err != nil {
+				return admissionError(err)
+			}
+
+			if len(compiled.Snapshot().Workflow.Inputs) != 0 && !hasInputsFile {
+				return admissionError(errInputsRequired)
 			}
 
 			if dependencies.run == nil {
 				return internalError(errRunUnavailable)
 			}
 
-			output, err := dependencies.run(command.Context(), cfg, compiled, format)
+			output, err := dependencies.run(command.Context(), cfg, compiled, inputs, format)
 			if err != nil {
 				return err
 			}
@@ -210,6 +230,9 @@ func newRunCommand(dependencies commandDependencies) *cobra.Command {
 		},
 	}
 	addOperationFlags(command, &configPath, &formatValue)
+	command.Flags().StringVar(&inputsPath, "inputs", "", "workflow inputs JSON file")
+	command.Flags().StringVar(&evidenceDirectory, "evidence-directory", "", "trusted run-only evidence directory override")
+	command.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError(err) })
 
 	return command
 }
@@ -265,10 +288,119 @@ func parseFormat(value string) (outputFormat, error) {
 	}
 }
 
+func loadRunInputs(path string, changed bool) (inputs map[string]any, loaded bool, err error) {
+	if !changed {
+		return map[string]any{}, false, nil
+	}
+
+	if path == "" {
+		return nil, false, errInputsPath
+	}
+
+	if path == "-" {
+		return nil, false, errInputsStdin
+	}
+
+	fileInfo, err := os.Lstat(path)
+	if err != nil {
+		return nil, false, fmt.Errorf("checking inputs file: %w", err)
+	}
+
+	if fileInfo.Mode()&os.ModeSymlink != 0 || !fileInfo.Mode().IsRegular() {
+		return nil, false, errInputsRegularFile
+	}
+
+	data, err := os.ReadFile(path) //nolint:gosec // trusted by caller contract
+	if err != nil {
+		return nil, false, fmt.Errorf("reading inputs file: %w", err)
+	}
+
+	if !utf8.Valid(data) {
+		return nil, false, errInputsInvalidUTF8
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, false, fmt.Errorf("decoding inputs JSON: %w", err)
+	}
+
+	inputs, ok := value.(map[string]any)
+	if !ok {
+		return nil, false, errInputsObjectRoot
+	}
+
+	var trailing any
+	if err := decoder.Decode(&trailing); err != nil {
+		if !errors.Is(err, io.EOF) {
+			return nil, false, errInputsTrailingToken
+		}
+	} else {
+		switch trailing.(type) {
+		case map[string]any, []any:
+			return nil, false, errInputsTrailingDocument
+		default:
+			return nil, false, errInputsTrailingToken
+		}
+	}
+
+	return inputs, true, nil
+}
+
+func normalizedInputsForValidation(inputs map[string]any) map[string]any {
+	normalized, ok := normalizeJSONValue(inputs).(map[string]any)
+	if !ok {
+		return map[string]any{}
+	}
+
+	return normalized
+}
+
+func normalizeJSONValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		clone := make(map[string]any, len(typed))
+		for key, nested := range typed {
+			clone[key] = normalizeJSONValue(nested)
+		}
+
+		return clone
+	case []any:
+		clone := make([]any, len(typed))
+		for index := range typed {
+			clone[index] = normalizeJSONValue(typed[index])
+		}
+
+		return clone
+	case json.Number:
+		if integer, err := typed.Int64(); err == nil {
+			return integer
+		}
+
+		if decimal, err := typed.Float64(); err == nil {
+			return decimal
+		}
+
+		return typed.String()
+	default:
+		return typed
+	}
+}
+
 func admit(configPath, workflowPath string, stdin io.Reader) (*config.Config, *plan.Plan, error) {
+	return admitRun(configPath, workflowPath, "", stdin)
+}
+
+func admitRun(configPath, workflowPath, evidenceDirectory string, stdin io.Reader) (*config.Config, *plan.Plan, error) {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("loading config: %w", err)
+	}
+
+	if evidenceDirectory != "" {
+		cfg.Evidence.Directory = evidenceDirectory
 	}
 
 	workflow, err := loadWorkflow(workflowPath, stdin)
@@ -307,9 +439,9 @@ func loadWorkflow(path string, stdin io.Reader) (*config.Workflow, error) {
 	return workflow, nil
 }
 
-func runAdmittedWorkflow(ctx context.Context, cfg *config.Config, compiled *plan.Plan, format outputFormat) ([]byte, error) {
-	if len(compiled.Snapshot().Workflow.Inputs) != 0 {
-		return nil, executionError(errWorkflowInputs)
+func runAdmittedWorkflow(ctx context.Context, cfg *config.Config, compiled *plan.Plan, inputs map[string]any, format outputFormat) ([]byte, error) {
+	if err := compiler.ValidateInputs(compiled, normalizedInputsForValidation(inputs)); err != nil {
+		return nil, executionError(err)
 	}
 
 	registry, err := buildToolRegistry(cfg, compiled)
@@ -317,7 +449,7 @@ func runAdmittedWorkflow(ctx context.Context, cfg *config.Config, compiled *plan
 		return nil, executionError(err)
 	}
 
-	result, err := runtime.RunWithInputsAndToolsets(ctx, compiled, bundledModelResolver(cfg), registry.FilteredToolset, map[string]any{})
+	result, err := runtime.RunWithInputsAndToolsets(ctx, compiled, bundledModelResolver(cfg), registry.FilteredToolset, inputs)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil, context.Canceled
