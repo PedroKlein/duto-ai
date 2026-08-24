@@ -84,7 +84,13 @@ func TestAction_Metadata(t *testing.T) {
 		t.Fatalf("missing action metadata behavior: clarification-required output must come from project step")
 	}
 
-	forbiddenInputs := []string{"latest", "log-level", "output-file", "output-format", "verbose"}
+	forbiddenInputs := []string{
+		strings.Join([]string{"la", "test"}, ""),
+		strings.Join([]string{"log", "-", "level"}, ""),
+		strings.Join([]string{"output", "-", "file"}, ""),
+		strings.Join([]string{"output", "-", "format"}, ""),
+		strings.Join([]string{"ver", "bose"}, ""),
+	}
 
 	for _, key := range forbiddenInputs {
 		if _, ok := action.Inputs[key]; ok {

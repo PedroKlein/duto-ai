@@ -4,10 +4,10 @@ description: Run one admitted duto-ai workflow through the official composite ad
 
 inputs:
   workflow:
-    description: Relative workflow path under GITHUB_WORKSPACE.
+    description: Relative workflow file under GITHUB_WORKSPACE; absolute paths, traversal, and symlinks reject.
     required: true
   config:
-    description: Relative trusted config path under GITHUB_WORKSPACE.
+    description: Relative trusted config file under GITHUB_WORKSPACE; defaults to duto.yaml.
     required: false
     default: duto.yaml
   version:
@@ -20,25 +20,25 @@ inputs:
 
 outputs:
   status:
-    description: Typed runtime status.
+    description: Typed runtime status (empty when no typed result was emitted).
     value: ${{ steps.project.outputs.status }}
   outcome:
-    description: Typed runtime outcome.
+    description: Typed runtime outcome (empty when unavailable).
     value: ${{ steps.project.outputs.outcome }}
   run-id:
-    description: Typed runtime run identifier.
+    description: Typed runtime run identifier (empty when unavailable).
     value: ${{ steps.project.outputs['run-id'] }}
   result-path:
-    description: Local path to the typed result when available.
+    description: Runner-local path to the typed result file when available.
     value: ${{ steps.project.outputs['result-path'] }}
   evidence-path:
-    description: Local path to the redacted Action evidence bundle.
+    description: Runner-local path to the redacted Action evidence bundle.
     value: ${{ steps.project.outputs['evidence-path'] }}
   failed-step:
-    description: Failed step identifier when available.
+    description: Failed-step identifier from the typed result, when available.
     value: ${{ steps.project.outputs['failed-step'] }}
   clarification-required:
-    description: Boolean signal for awaiting-input outcomes.
+    description: Boolean signal for awaiting_input outcomes; empty when unavailable.
     value: ${{ steps.project.outputs['clarification-required'] }}
 
 runs:

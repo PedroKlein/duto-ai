@@ -51,7 +51,7 @@ go build -o /tmp/duto-ai ./cmd/duto-ai
 /tmp/duto-ai plan --format json --config testdata/config.yaml testdata/workflow.yaml
 ```
 
-The fixture provider is a placeholder suitable for admission tests. Do not use it as a live provider configuration. The CLI `run` command also rejects workflows with declared top-level inputs because M1 has no CLI input flag; runtime integration tests exercise input-bearing plans through the Go API.
+The fixture provider is a placeholder suitable for admission tests. Do not use it as a live provider configuration. For `run`, use a trusted provider configuration and pass workflow inputs with `--inputs FILE` when the workflow declares top-level `inputs`. `FILE` must be a strict UTF-8 JSON object from a regular file.
 
 ## Test boundaries
 
@@ -71,9 +71,10 @@ When public flags, schema fields, tools, provider seams, result fields, or host 
 1. Update `README.md` and the relevant reference or architecture document.
 2. Update an ADR when the accepted contract or milestone boundary changes.
 3. Decode complete YAML examples with the strict loader through the built CLI.
-4. Check relative Markdown links.
-5. Search tracked and untracked non-ignored files for credentials, private endpoints, workstation paths, internal model identifiers, and private planning metadata.
-6. Search public docs for removed command flags, fields, and tool names.
+4. Run the top-level documentation validators: `go test -race ./internal/actiontest -run '^TestDocs_' -count=1 -v`.
+5. Check relative Markdown links.
+6. Search tracked and untracked non-ignored files for credentials, private endpoints, workstation paths, internal model identifiers, and private planning metadata.
+7. Search public docs for removed command flags, fields, and tool names.
 
 Keep public examples and fixtures provider-neutral. Never add real credentials or private endpoints to `.env.example`, tests, docs, logs, or evidence.
 

@@ -2,7 +2,7 @@
 
 `duto-ai` is a CLI and runtime for bounded, typed AI workflow DAGs. It strictly decodes a trusted runtime configuration and a portable workflow, compiles an immutable effective plan, and executes that plan with [ADK Go v2](https://github.com/google/adk-go).
 
-The local CLI is the shipped M1 interface. M2 has a frozen one-shot GitHub Action contract in [ADR 009](docs/adr/009-one-shot-github-action.md) and is under implementation. Workspace or Git mutation and remote publication are M3. Durable pause/resume, cross-runner recovery, and asynchronous reply correlation are future hosting work.
+The local CLI remains the primary interface. M2 adds an official one-shot GitHub Action adapter in this repository, with its contract frozen in [ADR 009](docs/adr/009-one-shot-github-action.md). Workspace or Git mutation and remote publication are M3. Durable pause/resume, cross-runner recovery, and asynchronous reply correlation are future hosting work.
 
 ## Build and inspect a workflow
 
@@ -82,7 +82,7 @@ Run a workflow that declares no runtime inputs:
 ```text
 duto-ai validate [--config FILE] [--format text|json] WORKFLOW|-
 duto-ai plan     [--config FILE] [--format text|json] WORKFLOW|-
-duto-ai run      [--config FILE] [--format text|json] WORKFLOW|-
+duto-ai run      [--config FILE] [--format text|json] [--inputs FILE] [--evidence-directory DIR] WORKFLOW|-
 duto-ai version
 ```
 
@@ -105,20 +105,73 @@ Exit codes are stable:
 | `4` | Execution failure or incomplete execution |
 | `130` | Cancellation |
 
-### Runtime-input limitation
+### Runtime inputs
 
-The v1 workflow format can declare typed top-level `inputs`, and the runtime API accepts input values. The shipped CLI has no input flag or input document. `validate` and `plan` accept workflows that declare inputs, but `run` rejects any workflow with a non-empty top-level `inputs` map before provider construction. M2 maps trusted host data to those declared inputs through the frozen Action contract in [ADR 009](docs/adr/009-one-shot-github-action.md).
+`run` accepts `--inputs FILE` for one strict UTF-8 JSON object. `--inputs -` is invalid because stdin remains reserved for `WORKFLOW=-`. When a workflow declares top-level `inputs`, `--inputs` is required and is validated before provider construction.
 
-## M2 one-shot GitHub Action contract (frozen)
+`run` also accepts `--evidence-directory DIR` as a trusted run-only override for the runtime evidence bundle path.
 
-M2 is not shipped yet. ADR 009 is the canonical contract for the Action surface and boundaries.
+## Use the one-shot GitHub Action (M2)
 
-- **Exact inputs:** `workflow`, `config`, `version`, `evidence-retention-days`
+M2 wraps the same admitted one-shot runtime path used by the local CLI. Caller workflows own checkout and permission ceilings.
+
+### Minimal caller workflow (pinned actions)
+
+```yaml
+name: duto
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * *"
+  push:
+  pull_request:
+  issues:
+  issue_comment:
+
+jobs:
+  run-duto:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Add only when the admitted workflow uses GitHub read tools:
+      # pull-requests: read
+      # issues: read
+      # checks: read
+    steps:
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - if: github.event_name != 'pull_request'
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Run duto-ai
+        uses: PedroKlein/duto-ai@432887efbfac9e4cec0bd6bedadb85999772740f
+        with:
+          workflow: .github/ai-workflows/scenarios/template-variables.yaml
+          config: .github/ai-workflows/config-m2.yaml
+          version: v0.2.2
+          evidence-retention-days: "7"
+```
+
+Pin both `actions/checkout` and `PedroKlein/duto-ai` to full 40-character commit SHAs. Update those pins through your normal dependency-review process.
+
+### Action reference
+
+- **Exact inputs:** `workflow`, `config` (default `duto.yaml`), `version` (`vMAJOR.MINOR.PATCH`), `evidence-retention-days` (default `7`)
 - **Exact outputs:** `status`, `outcome`, `run-id`, `result-path`, `evidence-path`, `failed-step`, `clarification-required`
-- **Exact events:** `workflow_dispatch`, `schedule`, `push`, `pull_request`, `issues`, `issue_comment`
-- **Process flags:** runtime input file via `--inputs`; trusted run-only evidence override via `--evidence-directory`
-- **Exit behavior:** when a typed result exists, JSON mode writes exactly one newline-terminated result payload before exit `0`, `4`, or `130`; pre-result failures keep stdout empty
-- **Security rules:** strict path confinement under `GITHUB_WORKSPACE`, caller-owned checkout and permission ceiling, fail-closed token handling, authenticated checksum-verified installer, and redacted Action-only uploaded evidence bundle
+- **Supported events:** `workflow_dispatch`, `schedule`, `push`, `pull_request`, `issues`, `issue_comment`
+- **Checkout contract:** caller-owned checkout with `persist-credentials: false`; use `pull_request.base.sha` for `pull_request`, otherwise `github.sha`
+- **Permissions contract:** baseline `contents: read`; add only `pull-requests: read`, `issues: read`, and `checks: read` when needed by admitted GitHub read tools
+- **Failure handling:** if runtime emits a typed result, JSON mode writes exactly one newline-terminated payload before exit `0`, `4`, or `130`; pre-result usage/admission/internal failures keep stdout empty
+- **Evidence and retention:** full typed result and runtime evidence remain runner-local; uploaded artifact is the redacted Action bundle with configured retention days (subject to repository policy)
+- **Process boundary:** `shell.run` and runner execution are not a sandbox
 - **Exclusions:** no writes, no SafeOutputs application, no durable state, no pause/resume, no cross-runner recovery, and no async replies
 
 ## Trusted configuration reference

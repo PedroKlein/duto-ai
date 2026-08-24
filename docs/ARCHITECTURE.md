@@ -6,7 +6,7 @@ This document explains the shipped CLI-first M1 runtime. [ADR 008](adr/008-produ
 
 Duto validates, inspects, and executes a finite typed workflow. Workflow generation, open-ended planning, backlog management, and dynamic graph expansion belong to callers.
 
-The core is host-neutral. M1 is a local process interface. M2 has a frozen GitHub Action adapter contract in [ADR 009](adr/009-one-shot-github-action.md) and is not part of the current runtime yet. Mutation and publication are M3. Durable sessions and cross-runner recovery remain future work.
+The core is host-neutral. M1 is a local process interface. M2 is the official one-shot GitHub Action adapter in this repository, with contract details frozen in [ADR 009](adr/009-one-shot-github-action.md). Mutation and publication are M3. Durable sessions and cross-runner recovery remain future work.
 
 ```text
 caller
@@ -32,7 +32,9 @@ All three operation commands accept one workflow file or `-` for stdin, `--confi
 
 The composition root also owns the bundled provider adapter and concrete run-scoped tool construction. Core packages receive narrow model and toolset resolver functions; they do not read provider credentials or construct host clients.
 
-The CLI does not accept workflow input values. It can validate and plan a workflow with declared root inputs, but `run` rejects that workflow before provider construction. The runtime package itself supports a typed input map for host adapters and tests.
+The CLI accepts workflow input values through `run --inputs FILE`, which must be a strict UTF-8 JSON object read from a regular file. `--inputs -` is rejected so stdin remains reserved for `WORKFLOW=-`. If a workflow declares root `inputs`, `--inputs` is required and enforced before provider construction.
+
+`run` also accepts `--evidence-directory DIR` as a trusted run-only override for the runtime evidence bundle path.
 
 ## Strict source documents
 
@@ -155,7 +157,7 @@ Live model or hosted acceptance can supplement those gates only after they pass.
 
 ## Later delivery layers
 
-M2 packages the same one-shot CLI and runtime contract as an official GitHub Action. It owns event-to-input mapping, permissions, summaries, outputs, and artifact upload.
+M2 packages the same one-shot CLI and runtime contract as the official GitHub Action adapter (`action/install.sh`, `action/prepare.sh`, `action/run.sh`, and `action/project.sh`). It owns event-to-input mapping, permissions, summaries, outputs, and artifact upload.
 
 The frozen M2 reference surface is:
 

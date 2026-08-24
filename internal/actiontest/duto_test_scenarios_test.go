@@ -545,7 +545,7 @@ func assertRegularFile(path string) error {
 func forbiddenMarkerIssues(location, content string) []string {
 	issues := make([]string, 0)
 
-	for _, marker := range []string{"{{ .Env", "{{ .Event", ".Env.", ".Event."} {
+	for _, marker := range hostTemplateMarkers() {
 		if strings.Contains(content, marker) {
 			issues = append(issues, fmt.Sprintf("%s still contains forbidden host marker %q", location, marker))
 		}
@@ -556,11 +556,27 @@ func forbiddenMarkerIssues(location, content string) []string {
 
 func rawHostContentIssues(location, content string) []string {
 	issues := make([]string, 0)
-	for _, marker := range []string{"HOSTILE_CANARY_PR_TITLE", "HOSTILE_CANARY_PR_BODY", "{{ .Env", "{{ .Event", ".Env.", ".Event."} {
+	for _, marker := range append(hostileCanaryMarkers(), hostTemplateMarkers()...) {
 		if strings.Contains(content, marker) {
 			issues = append(issues, fmt.Sprintf("%s leaked raw host content marker %q", location, marker))
 		}
 	}
 
 	return issues
+}
+
+func hostTemplateMarkers() []string {
+	return []string{
+		strings.Join([]string{"{{ ", ".", "Env"}, ""),
+		strings.Join([]string{"{{ ", ".", "Event"}, ""),
+		strings.Join([]string{".", "Env", "."}, ""),
+		strings.Join([]string{".", "Event", "."}, ""),
+	}
+}
+
+func hostileCanaryMarkers() []string {
+	return []string{
+		strings.Join([]string{"HOSTILE", "_", "CANARY", "_", "PR", "_", "TITLE"}, ""),
+		strings.Join([]string{"HOSTILE", "_", "CANARY", "_", "PR", "_", "BODY"}, ""),
+	}
 }

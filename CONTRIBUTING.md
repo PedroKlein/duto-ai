@@ -44,6 +44,7 @@ Use this pull request body:
 mise run check
 mise run integration
 mise run scenarios
+go test -race ./internal/actiontest -run '^TestDocs_' -count=1 -v
 go mod tidy -diff
 git diff --check
 ```
@@ -73,7 +74,7 @@ Do not commit:
 - private planning IDs, run IDs, transcripts, or temporary evidence bundles;
 - generated coverage files or local `.env` files.
 
-Complete YAML examples must pass the strict decoder. Relative Markdown links must resolve. Public tool names and command flags must match the current binary.
+Complete YAML examples must pass the strict decoder. Relative Markdown links must resolve. Public tool names and command flags must match the current binary. Any documented `uses:` action reference must pin to a full 40-character commit SHA.
 
 ## Report bugs and security issues
 
