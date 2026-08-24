@@ -171,6 +171,12 @@ func consumeEvents(ctx context.Context, r *runner.Runner, root agent.Agent, runI
 		}
 
 		stepID := eventNodeName(event)
+		terminalEvent := isTerminalEvent(event)
+
+		if terminalEvent {
+			stepID = terminalEventStepID(event)
+		}
+
 		if terminalAgentName != "" && event.Author == terminalAgentName {
 			stepID = terminalStepID
 		}
@@ -196,7 +202,7 @@ func consumeEvents(ctx context.Context, r *runner.Runner, root agent.Agent, runI
 			result.Steps[index].Status = StatusSucceeded
 		}
 
-		if isTerminalEvent(event) || (terminalAgentName != "" && event.Author == terminalAgentName) {
+		if terminalEvent || (terminalAgentName != "" && event.Author == terminalAgentName) {
 			terminalOutputs = append(terminalOutputs, output)
 		}
 	}
@@ -300,6 +306,17 @@ func finishResult(result *Result, contextErr, runErr error) {
 
 func isTerminalEvent(event *session.Event) bool {
 	return strings.HasPrefix(eventNodeName(event), compiler.TerminalNodeName+"-")
+}
+
+func terminalEventStepID(event *session.Event) string {
+	name := strings.TrimPrefix(eventNodeName(event), compiler.TerminalNodeName+"-")
+	separator := strings.LastIndex(name, "-")
+
+	if separator <= 0 {
+		return ""
+	}
+
+	return name[:separator]
 }
 
 func eventNodeName(event *session.Event) string {

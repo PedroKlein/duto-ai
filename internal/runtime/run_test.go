@@ -91,6 +91,14 @@ func TestRun_NoToolsReturnsTypedTerminalObject(t *testing.T) {
 		t.Fatalf("typed output mismatch (-want +got):\n%s", diff)
 	}
 
+	if len(result.Steps) != 1 || result.Steps[0].Status != runtime.StatusSucceeded {
+		t.Fatalf("step result = %#v, want one succeeded step", result.Steps)
+	}
+
+	if diff := cmp.Diff(want, result.Steps[0].Output); diff != "" {
+		t.Fatalf("step output mismatch (-want +got):\n%s", diff)
+	}
+
 	if result.Status != runtime.StatusSucceeded || result.Outcome != "completed" {
 		t.Fatalf("status/outcome = %q/%q, want succeeded/completed", result.Status, result.Outcome)
 	}
