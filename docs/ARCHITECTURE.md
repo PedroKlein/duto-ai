@@ -6,7 +6,7 @@ This document explains the shipped CLI-first M1 runtime. [ADR 008](adr/008-produ
 
 Duto validates, inspects, and executes a finite typed workflow. Workflow generation, open-ended planning, backlog management, and dynamic graph expansion belong to callers.
 
-The core is host-neutral. M1 is a local process interface. A GitHub Action adapter is M2, not part of the current runtime. Mutation and publication are M3. Durable sessions and cross-runner recovery remain future work.
+The core is host-neutral. M1 is a local process interface. M2 has a frozen GitHub Action adapter contract in [ADR 009](adr/009-one-shot-github-action.md) and is not part of the current runtime yet. Mutation and publication are M3. Durable sessions and cross-runner recovery remain future work.
 
 ```text
 caller
@@ -156,6 +156,16 @@ Live model or hosted acceptance can supplement those gates only after they pass.
 ## Later delivery layers
 
 M2 packages the same one-shot CLI and runtime contract as an official GitHub Action. It owns event-to-input mapping, permissions, summaries, outputs, and artifact upload.
+
+The frozen M2 reference surface is:
+
+- four inputs: `workflow`, `config`, `version`, `evidence-retention-days`;
+- seven outputs: `status`, `outcome`, `run-id`, `result-path`, `evidence-path`, `failed-step`, `clarification-required`;
+- six events: `workflow_dispatch`, `schedule`, `push`, `pull_request`, `issues`, `issue_comment`.
+
+M2 also fixes path confinement, caller-owned checkout and permission ceiling, authenticated checksum-verified installer, and redacted Action evidence projection as documented in ADR 009.
+
+M2 excludes writes, SafeOutputs application, durable state, pause/resume, cross-runner recovery, and async replies.
 
 M3 adds admitted workspace and Git mutation, staged safe-output requests, and a fixed trusted publisher. It does not retroactively grant write authority to M1 tools.
 

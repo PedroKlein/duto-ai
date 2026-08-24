@@ -2,7 +2,7 @@
 
 `duto-ai` is a CLI and runtime for bounded, typed AI workflow DAGs. It strictly decodes a trusted runtime configuration and a portable workflow, compiles an immutable effective plan, and executes that plan with [ADK Go v2](https://github.com/google/adk-go).
 
-The local CLI is the shipped M1 interface. A one-shot GitHub Action adapter is M2. Workspace or Git mutation and remote publication are M3. Durable pause/resume, cross-runner recovery, and asynchronous reply correlation are future hosting work.
+The local CLI is the shipped M1 interface. M2 has a frozen one-shot GitHub Action contract in [ADR 009](docs/adr/009-one-shot-github-action.md) and is under implementation. Workspace or Git mutation and remote publication are M3. Durable pause/resume, cross-runner recovery, and asynchronous reply correlation are future hosting work.
 
 ## Build and inspect a workflow
 
@@ -107,7 +107,19 @@ Exit codes are stable:
 
 ### Runtime-input limitation
 
-The v1 workflow format can declare typed top-level `inputs`, and the runtime API accepts input values. The shipped CLI has no input flag or input document. `validate` and `plan` accept workflows that declare inputs, but `run` rejects any workflow with a non-empty top-level `inputs` map before provider construction. M2 will map trusted host data to those declared inputs.
+The v1 workflow format can declare typed top-level `inputs`, and the runtime API accepts input values. The shipped CLI has no input flag or input document. `validate` and `plan` accept workflows that declare inputs, but `run` rejects any workflow with a non-empty top-level `inputs` map before provider construction. M2 maps trusted host data to those declared inputs through the frozen Action contract in [ADR 009](docs/adr/009-one-shot-github-action.md).
+
+## M2 one-shot GitHub Action contract (frozen)
+
+M2 is not shipped yet. ADR 009 is the canonical contract for the Action surface and boundaries.
+
+- **Exact inputs:** `workflow`, `config`, `version`, `evidence-retention-days`
+- **Exact outputs:** `status`, `outcome`, `run-id`, `result-path`, `evidence-path`, `failed-step`, `clarification-required`
+- **Exact events:** `workflow_dispatch`, `schedule`, `push`, `pull_request`, `issues`, `issue_comment`
+- **Process flags:** runtime input file via `--inputs`; trusted run-only evidence override via `--evidence-directory`
+- **Exit behavior:** when a typed result exists, JSON mode writes exactly one newline-terminated result payload before exit `0`, `4`, or `130`; pre-result failures keep stdout empty
+- **Security rules:** strict path confinement under `GITHUB_WORKSPACE`, caller-owned checkout and permission ceiling, fail-closed token handling, authenticated checksum-verified installer, and redacted Action-only uploaded evidence bundle
+- **Exclusions:** no writes, no SafeOutputs application, no durable state, no pause/resume, no cross-runner recovery, and no async replies
 
 ## Trusted configuration reference
 
@@ -237,7 +249,7 @@ The manifest is written last and includes the plan digest plus file sizes and SH
 | Milestone | Scope |
 |---|---|
 | M1, shipped | Local `validate`, `plan`, and one-shot `run`; strict v1 documents; bounded typed DAGs; read/process tools; native finite subagents; typed results and evidence |
-| M2 | Official one-shot GitHub Action mapping trusted host inputs to the same CLI contract, then projecting summaries, outputs, and artifacts |
+| M2 (contract frozen, implementation in progress) | Official one-shot GitHub Action mapping trusted host inputs to the same CLI contract, then projecting summaries, outputs, and artifacts |
 | M3 | Admitted workspace and Git mutation, staged safe outputs, and trusted publication |
 | Future durable hosting | Persistent pause/resume, encrypted host state, cross-runner recovery, lifecycle reconciliation, and asynchronous replies |
 

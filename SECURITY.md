@@ -24,7 +24,26 @@ M1 is a local one-shot process. The caller owns workflow provenance, checkout is
 
 Treat portable workflows, prompt files, skill files, repository content, fetched pages, model output, and tool output as untrusted data. Trusted configuration is a control-plane input. Do not let untrusted content choose or modify it.
 
-M1 does not provide a GitHub Action, mutation tools, remote publication, durable sessions, or cross-runner recovery. M2 will own Action event and permission mapping. M3 will own mutation and publication policy.
+M1 does not provide a GitHub Action, mutation tools, remote publication, durable sessions, or cross-runner recovery. M2 has a frozen Action contract in [ADR 009](docs/adr/009-one-shot-github-action.md) and is under implementation. M3 owns mutation and publication policy.
+
+## M2 Action trust contract (frozen)
+
+M2 is a one-shot adapter with a closed host surface.
+
+- Exact supported events: `workflow_dispatch`, `schedule`, `push`, `pull_request`, `issues`, `issue_comment`.
+- `workflow` and `config` must be relative regular files beneath `GITHUB_WORKSPACE`; absolute paths, traversal, symlinks, and missing files reject.
+- Checkout is caller-owned with `persist-credentials: false`; the Action verifies expected `HEAD` before reading trusted control files.
+- Caller workflow owns the `permissions:` ceiling. Minimum documented baseline is `contents: read`; add only `pull-requests: read`, `issues: read`, or `checks: read` when needed.
+- `github.token` is scoped to exact install/runtime steps, never persisted, and never used as a capability bypass.
+- Fork PR or unknown trust contexts stay transitively read-only; supported non-fork contexts still cannot exceed admitted M1 authority.
+
+M2 installer and evidence rules are also fixed:
+
+- install only from authenticated exact-tag release metadata, with required size and `sha256:` digest verification before extraction;
+- no `latest`, branch, commit SHA, mirror, cache, or unauthenticated fallback;
+- upload only the redacted Action evidence artifact (`events.jsonl`, `receipt.json`, `summary.md`, `manifest.json`) with bounded retention.
+
+M2 excludes writes, SafeOutputs application, durable state, pause/resume, cross-runner recovery, and async replies.
 
 ## Configuration and secrets
 
