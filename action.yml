@@ -21,6 +21,22 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Prepare trusted workflow inputs
+      shell: bash
+      env:
+        GITHUB_EVENT_NAME: ${{ github.event_name }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        GITHUB_REPOSITORY_ID: ${{ github.event.repository.id }}
+        GITHUB_ACTOR: ${{ github.actor }}
+        GITHUB_ACTOR_ID: ${{ github.actor_id }}
+        GITHUB_SHA: ${{ github.sha }}
+        GITHUB_REF: ${{ github.ref }}
+        GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        GITHUB_RUN_ID: ${{ github.run_id }}
+        GITHUB_EVENT_PATH: ${{ github.event_path }}
+      run: bash "${{ github.action_path }}/action/prepare.sh"
+
     - name: Run duto-ai
       shell: bash
       run: bash "${{ github.action_path }}/action/run.sh"

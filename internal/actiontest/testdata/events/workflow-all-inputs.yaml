@@ -1,0 +1,68 @@
+version: 1
+name: action-event-map-all
+model: light
+tools: []
+limits:
+  timeout: 1m
+  max_iterations: 2
+  max_model_calls: 2
+  max_tool_calls: 0
+  max_concurrency: 1
+  max_parallel_calls: 1
+  max_artifact_bytes: 0
+inputs:
+  event-name:
+    schema: {type: string, max_length: 64}
+  repository-owner:
+    schema: {type: string, max_length: 128}
+  repository-name:
+    schema: {type: string, max_length: 128}
+  repository-id:
+    schema: {type: string, max_length: 32}
+  actor:
+    schema: {type: string, max_length: 128}
+  actor-id:
+    schema: {type: string, max_length: 32}
+  revision:
+    schema: {type: string, max_length: 64}
+  ref:
+    schema: {type: string, max_length: 256}
+  workflow-revision:
+    schema: {type: string, max_length: 64}
+  host-run-id:
+    schema: {type: string, max_length: 32}
+  subject-kind:
+    schema: {type: string, max_length: 32}
+  subject-number:
+    schema: {type: number}
+  base-revision:
+    schema: {type: string, max_length: 64}
+  head-revision:
+    schema: {type: string, max_length: 64}
+  base-repository-id:
+    schema: {type: string, max_length: 32}
+  head-repository-id:
+    schema: {type: string, max_length: 32}
+  fork:
+    schema: {type: boolean}
+  comment-id:
+    schema: {type: string, max_length: 32}
+steps:
+  - id: report
+    needs: []
+    instruction: Return a completed payload.
+    tools: []
+    workspaces: []
+    input:
+      type: object
+      properties:
+        event_name: {type: string, max_length: 64}
+      required: [event_name]
+    with:
+      event_name: {input: event-name}
+    output:
+      type: object
+      properties:
+        outcome: {type: string, enum: [completed]}
+      required: [outcome]
+result: {step: report}

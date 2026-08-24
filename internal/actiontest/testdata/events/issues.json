@@ -1,0 +1,18 @@
+{
+  "repository": {
+    "id": 9007199254740993,
+    "name": "demo-repo",
+    "owner": {
+      "login": "example-org"
+    }
+  },
+  "sender": {
+    "login": "issue-user",
+    "id": 9007199254740996
+  },
+  "issue": {
+    "number": 7,
+    "title": "HOSTILE_CANARY_ISSUE_TITLE",
+    "body": "HOSTILE_CANARY_ISSUE_BODY"
+  }
+}

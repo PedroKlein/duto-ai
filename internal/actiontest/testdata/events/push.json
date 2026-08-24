@@ -1,0 +1,19 @@
+{
+  "ref": "refs/heads/main",
+  "after": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "deleted": false,
+  "repository": {
+    "id": 9007199254740993,
+    "name": "demo-repo",
+    "owner": {
+      "login": "example-org"
+    }
+  },
+  "sender": {
+    "login": "pusher-user",
+    "id": 9007199254740997
+  },
+  "head_commit": {
+    "message": "HOSTILE_CANARY_PUSH_MESSAGE"
+  }
+}

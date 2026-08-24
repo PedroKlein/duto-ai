@@ -1,0 +1,17 @@
+{
+  "repository": {
+    "id": 9007199254740993,
+    "name": "demo-repo",
+    "owner": {
+      "login": "example-org"
+    }
+  },
+  "sender": {
+    "login": "workflow-run-user",
+    "id": 9007199254740111
+  },
+  "workflow_run": {
+    "id": 1001,
+    "head_sha": "9999999999999999999999999999999999999999"
+  }
+}

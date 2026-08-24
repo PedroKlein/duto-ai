@@ -1,0 +1,32 @@
+{
+  "number": 52,
+  "repository": {
+    "id": 9007199254740993,
+    "name": "demo-repo",
+    "owner": {
+      "login": "example-org"
+    }
+  },
+  "sender": {
+    "login": "triggering-user",
+    "id": 9007199254740999
+  },
+  "pull_request": {
+    "number": 52,
+    "title": "HOSTILE_CANARY_PR_TITLE",
+    "body": "HOSTILE_CANARY_PR_BODY",
+    "base": {
+      "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "repo": {
+        "id": 9007199254740993
+      }
+    },
+    "head": {
+      "sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "repo": {
+        "id": 9007199254740995,
+        "fork": false
+      }
+    }
+  }
+}
