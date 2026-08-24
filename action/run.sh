@@ -20,6 +20,23 @@ workflow_input="${INPUT_WORKFLOW:?INPUT_WORKFLOW is required}"
 config_input="${INPUT_CONFIG:-duto.yaml}"
 inputs_file="${DUTO_ACTION_INPUTS_FILE:?DUTO_ACTION_INPUTS_FILE is required}"
 
+token_required="${DUTO_ACTION_NEEDS_GITHUB_TOKEN:-0}"
+case "$token_required" in
+  0|1) ;;
+  *)
+    fail "DUTO_ACTION_NEEDS_GITHUB_TOKEN is invalid"
+    ;;
+esac
+
+if [[ "$token_required" == "1" ]]; then
+  if [[ -z "${GITHUB_TOKEN:-}" && -z "${GH_TOKEN:-}" ]]; then
+    fail "github token is required for admitted GitHub read tools"
+  fi
+else
+  unset GITHUB_TOKEN
+  unset GH_TOKEN
+fi
+
 runtime_evidence_dir="${DUTO_ACTION_RUNTIME_EVIDENCE_DIR:-${DUTO_ACTION_EVIDENCE_DIR:-${RUNNER_TEMP:?RUNNER_TEMP is required}/duto-evidence}}"
 mkdir -p "${runtime_evidence_dir}"
 

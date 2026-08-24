@@ -1,0 +1,24 @@
+{
+  "repository": {
+    "id": 9007199254740993,
+    "name": "demo-repo",
+    "owner": {
+      "login": "example-org"
+    }
+  },
+  "sender": {
+    "login": "comment-user",
+    "id": 9007199254740994
+  },
+  "issue": {
+    "number": 52,
+    "title": "HOSTILE_CANARY_ISSUE_COMMENT_TITLE",
+    "pull_request": {
+      "url": "https://example.invalid/pulls/52"
+    }
+  },
+  "comment": {
+    "id": 9007199254740123,
+    "body": "HOSTILE_CANARY_ISSUE_COMMENT_BODY"
+  }
+}

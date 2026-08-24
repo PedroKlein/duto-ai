@@ -59,6 +59,8 @@ runs:
         GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
         GITHUB_RUN_ID: ${{ github.run_id }}
         GITHUB_EVENT_PATH: ${{ github.event_path }}
+        GITHUB_API_URL: ${{ github.api_url }}
+        GITHUB_TOKEN: ${{ github.token }}
       run: bash "${{ github.action_path }}/action/prepare.sh"
 
     - name: Run duto-ai
@@ -66,6 +68,7 @@ runs:
       shell: bash
       continue-on-error: true
       env:
+        GITHUB_TOKEN: ${{ github.token }}
         DUTO_ACTION_RESULT_FILE: ${{ runner.temp }}/duto-action-result.json
         DUTO_ACTION_RUNTIME_EVIDENCE_DIR: ${{ runner.temp }}/duto-runtime-evidence
       run: bash "${{ github.action_path }}/action/run.sh"

@@ -1,0 +1,30 @@
+version: 1
+providers:
+  default:
+    type: custom-provider
+    config: {}
+models:
+  light:
+    provider: default
+    target: example-model
+tools:
+  - github.read.issue
+  - github.read.pr
+  - github.read.checks
+  - shell.run
+tool_config:
+  github:
+    base_url: https://example.invalid/api/v3
+    owner: example-org
+    repository: demo-repo
+    subject: issue
+    ref: refs/heads/main
+    max_pages: 1
+    max_results: 1
+  shell:
+    executable: /usr/bin/env
+    args: ["true"]
+    workspace: .
+    environment: {}
+    max_stdout_bytes: 2048
+    max_stderr_bytes: 2048

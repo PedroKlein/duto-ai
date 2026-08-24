@@ -86,6 +86,151 @@ collect_declared_inputs() {
   ' "$workflow_path"
 }
 
+collect_workflow_tools() {
+  local workflow_path="$1"
+
+  awk '
+    function trim(value) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      return value
+    }
+
+    {
+      line = $0
+      sub(/[[:space:]]+#.*$/, "", line)
+
+      if (line ~ /^[[:space:]]*tools:[[:space:]]*\[[^]]*\][[:space:]]*$/) {
+        inline = line
+        sub(/^[^[]*\[/, "", inline)
+        sub(/\][[:space:]]*$/, "", inline)
+        count = split(inline, items, ",")
+        for (i = 1; i <= count; i++) {
+          item = trim(items[i])
+          if (item != "") {
+            print item
+          }
+        }
+        next
+      }
+
+      if (line ~ /^[[:space:]]*tools:[[:space:]]*$/) {
+        in_tools = 1
+        tools_indent = match(line, /[^ ]/) - 1
+        next
+      }
+
+      if (in_tools == 1) {
+        if (line ~ /^[[:space:]]*$/) {
+          next
+        }
+
+        current_indent = match(line, /[^ ]/) - 1
+        if (current_indent <= tools_indent) {
+          in_tools = 0
+        }
+      }
+
+      if (in_tools == 1 && line ~ /^[[:space:]]*-[[:space:]]*/) {
+        item = line
+        sub(/^[[:space:]]*-[[:space:]]*/, "", item)
+        item = trim(item)
+        if (item != "") {
+          print item
+        }
+      }
+    }
+  ' "$workflow_path" | LC_ALL=C sort -u
+}
+
+add_permission() {
+  local permission="$1"
+  local current
+
+  for current in "${required_permissions[@]}"; do
+    if [[ "$current" == "$permission" ]]; then
+      return
+    fi
+  done
+
+  required_permissions+=("$permission")
+}
+
+is_read_only_tool() {
+  local tool_name="$1"
+
+  case "$tool_name" in
+    files.find|files.grep|files.read|git.read.blame|git.read.diff|git.read.log|git.read.show|github.read.changed-files|github.read.checks|github.read.comments|github.read.diff|github.read.issue|github.read.pr|github.read.reviews|github.read.search-issues|web.fetch)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+permission_probe_endpoint() {
+  local permissions_csv="$1"
+  local checkout_revision="$2"
+
+  case ",$permissions_csv," in
+    *,issues,*)
+      printf '/repos/%s/issues?per_page=1\n' "$GITHUB_REPOSITORY"
+      return
+      ;;
+    *,pull-requests,*)
+      printf '/repos/%s/pulls?per_page=1\n' "$GITHUB_REPOSITORY"
+      return
+      ;;
+    *,checks,*)
+      printf '/repos/%s/commits/%s/check-runs?per_page=1\n' "$GITHUB_REPOSITORY" "$checkout_revision"
+      return
+      ;;
+    *)
+      printf '/repos/%s\n' "$GITHUB_REPOSITORY"
+      return
+      ;;
+  esac
+}
+
+probe_github_permissions() {
+  local permissions_csv="$1"
+  local checkout_revision="$2"
+
+  local token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+  local api_url="${GITHUB_API_URL:-}"
+
+  if [[ -z "$token" || -z "$api_url" ]]; then
+    return
+  fi
+
+  local endpoint
+  endpoint="$(permission_probe_endpoint "$permissions_csv" "$checkout_revision")"
+
+  local http_code
+  http_code="$(
+    curl \
+      --silent \
+      --show-error \
+      --output /dev/null \
+      --write-out '%{http_code}' \
+      --header 'Accept: application/vnd.github+json' \
+      --header "Authorization: Bearer $token" \
+      "${api_url}${endpoint}"
+  )" || fail "protected API permission check request failed"
+
+  if [[ ! "$http_code" =~ ^[0-9]{3}$ ]]; then
+    fail "protected API permission check returned invalid status"
+  fi
+
+  if [[ "$http_code" == "401" || "$http_code" == "403" ]]; then
+    fail "protected API permission check failed with HTTP ${http_code}"
+  fi
+
+  if ((10#$http_code >= 400)); then
+    fail "protected API permission check failed with HTTP ${http_code}"
+  fi
+}
+
 expected_checkout_revision() {
   case "$GITHUB_EVENT_NAME" in
     pull_request)
@@ -202,6 +347,59 @@ for declared in "${declared_inputs[@]}"; do
     fail "declared input \"$declared\" is not-in-closed-map"
   fi
 done
+
+required_permissions=("contents")
+needs_github_token=0
+plan_is_read_only=1
+
+while IFS= read -r tool_name; do
+  if [[ -z "$tool_name" ]]; then
+    continue
+  fi
+
+  case "$tool_name" in
+    github.read.*)
+      needs_github_token=1
+      ;;
+  esac
+
+  case "$tool_name" in
+    github.read.pr|github.read.diff|github.read.changed-files|github.read.reviews)
+      add_permission "pull-requests"
+      ;;
+    github.read.issue|github.read.comments|github.read.search-issues)
+      add_permission "issues"
+      ;;
+    github.read.checks)
+      add_permission "checks"
+      ;;
+  esac
+
+  if ! is_read_only_tool "$tool_name"; then
+    plan_is_read_only=0
+  fi
+done < <(collect_workflow_tools "$workflow_path")
+
+required_permissions_csv="$(printf '%s\n' "${required_permissions[@]}" | LC_ALL=C sort -u | paste -sd, -)"
+printf 'DUTO_ACTION_REQUIRED_PERMISSIONS=%s\n' "$required_permissions_csv" >>"$GITHUB_ENV"
+printf 'DUTO_ACTION_NEEDS_GITHUB_TOKEN=%s\n' "$needs_github_token" >>"$GITHUB_ENV"
+
+trust_class="trusted"
+if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+  if [[ "$(jq -r '.fork // false' "$candidate_json")" == "true" ]]; then
+    trust_class="fork"
+  fi
+elif [[ "$GITHUB_EVENT_NAME" == "issue_comment" ]]; then
+  trust_class="unknown"
+fi
+
+if [[ "$trust_class" != "trusted" && "$plan_is_read_only" -ne 1 ]]; then
+  fail "${trust_class} context is read-only: process-capable plan is not allowed"
+fi
+
+if [[ "$needs_github_token" -eq 1 ]]; then
+  probe_github_permissions "$required_permissions_csv" "$checkout_head"
+fi
 
 if [[ ${#declared_inputs[@]} -eq 0 ]]; then
   declared_json='[]'

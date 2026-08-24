@@ -1,0 +1,17 @@
+{
+  "repository": {
+    "id": 9007199254740993,
+    "name": "demo-repo",
+    "owner": {
+      "login": "example-org"
+    }
+  },
+  "sender": {
+    "login": "triggering-user",
+    "id": 9007199254740999
+  },
+  "inputs": {
+    "objective": "HOSTILE_CANARY_WORKFLOW_DISPATCH"
+  },
+  "workflow": "Action CI"
+}

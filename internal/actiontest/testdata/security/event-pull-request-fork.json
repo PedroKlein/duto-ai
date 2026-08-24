@@ -1,0 +1,32 @@
+{
+  "number": 62,
+  "repository": {
+    "id": 9007199254740993,
+    "name": "demo-repo",
+    "owner": {
+      "login": "example-org"
+    }
+  },
+  "sender": {
+    "login": "fork-user",
+    "id": 9007199254740666
+  },
+  "pull_request": {
+    "number": 62,
+    "title": "HOSTILE_CANARY_FORK_PR_TITLE",
+    "body": "HOSTILE_CANARY_FORK_PR_BODY",
+    "base": {
+      "sha": "abababababababababababababababababababab",
+      "repo": {
+        "id": 9007199254740993
+      }
+    },
+    "head": {
+      "sha": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "repo": {
+        "id": 9007199254741888,
+        "fork": true
+      }
+    }
+  }
+}
