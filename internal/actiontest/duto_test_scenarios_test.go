@@ -5,7 +5,6 @@ package actiontest_test
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
@@ -18,6 +17,9 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/PedroKlein/duto-ai/internal/config"
+	"github.com/PedroKlein/duto-ai/internal/plan"
 )
 
 const (
@@ -74,8 +76,9 @@ type dutoTestHostedMatrixRow struct {
 }
 
 type dutoTestHostedStep struct {
-	Uses string `yaml:"uses"`
-	Run  string `yaml:"run"`
+	Uses string            `yaml:"uses"`
+	Run  string            `yaml:"run"`
+	Env  map[string]string `yaml:"env"`
 }
 
 func TestDutoTestM2Scenarios(t *testing.T) {
@@ -83,6 +86,13 @@ func TestDutoTestM2Scenarios(t *testing.T) {
 	if dutoTestDir == "" {
 		t.Skip("skipping M2 cross-repository scenario assertions: DUTO_TEST_DIR is required")
 	}
+
+	t.Setenv("DUTO_TEST_PROVIDER_ENDPOINT", "https://provider.example.invalid")
+	t.Setenv("DUTO_TEST_PROVIDER_RESOURCE_GROUP", "example-resource-group")
+	t.Setenv("DUTO_TEST_PROVIDER_CLIENT_ID", "example-client-id")
+	t.Setenv("DUTO_TEST_PROVIDER_CLIENT_SECRET", "example-client-secret")
+	t.Setenv("DUTO_TEST_PROVIDER_AUTH_URL", "https://auth.example.invalid")
+	t.Setenv("DUTO_TEST_WORKSPACE_ROOT", dutoTestDir)
 
 	assertDutoTestScenarioSetIdentity(t, dutoTestDir)
 	assertDutoTestHostedWorkflowContract(t, dutoTestDir)
@@ -92,15 +102,14 @@ func TestDutoTestM2Scenarios(t *testing.T) {
 			name:        "template-prompt-file",
 			workflowRel: ".github/ai-workflows/scenarios/template-prompt-file.yaml",
 			promptRel:   ".github/ai-workflows/prompts/review-pr.md",
-			skillRel:    ".github/ai-workflows/skills/code-review.md",
-			expectedTypedData: func(_ string) map[string]any {
+			expectedTypedData: func(headSHA string) map[string]any {
 				return map[string]any{
 					"event-name":       "pull_request",
 					"repository-owner": "example-org",
 					"repository-name":  "demo-repo",
-					"subject-kind":     "pull_request",
-					"subject-number":   json.Number("52"),
 					"actor":            "triggering-user",
+					"ref":              defaultPullRequestRef,
+					"revision":         headSHA,
 				}
 			},
 		},
@@ -141,6 +150,20 @@ func verifyDutoTestM2Scenario(t *testing.T, dutoTestDir string, tc dutoTestM2Cas
 	configPath := filepath.Join(dutoTestDir, dutoTestScenarioConfigRel)
 	if err := assertRegularFile(configPath); err != nil {
 		issues = append(issues, fmt.Sprintf("real config path %q is unresolved: %v", dutoTestScenarioConfigRel, err))
+	}
+
+	runtimeConfig, configErr := config.LoadConfig(configPath)
+	if configErr != nil {
+		issues = append(issues, fmt.Sprintf("production config decode rejected %q: %v", dutoTestScenarioConfigRel, configErr))
+	}
+
+	workflow, workflowErr := config.DecodeWorkflow(workflowPath, workflowContent)
+	if workflowErr != nil {
+		issues = append(issues, fmt.Sprintf("production workflow decode rejected %q: %v", tc.workflowRel, workflowErr))
+	} else if configErr == nil {
+		if _, compileErr := plan.Compile(runtimeConfig, workflow); compileErr != nil {
+			issues = append(issues, fmt.Sprintf("production plan compilation rejected %q: %v", tc.workflowRel, compileErr))
+		}
 	}
 
 	if tc.promptRel != "" {
@@ -390,6 +413,7 @@ func assertDutoTestHostedWorkflowContract(t *testing.T, dutoTestDir string) {
 
 	checkoutRef := ""
 	actionRef := ""
+	var actionStep dutoTestHostedStep
 
 	for _, step := range job.Steps {
 		if legacyInstallerPattern.MatchString(step.Run) {
@@ -401,6 +425,7 @@ func assertDutoTestHostedWorkflowContract(t *testing.T, dutoTestDir string) {
 			checkoutRef = step.Uses
 		case strings.HasPrefix(step.Uses, "PedroKlein/duto-ai@"):
 			actionRef = step.Uses
+			actionStep = step
 		}
 	}
 
@@ -416,6 +441,23 @@ func assertDutoTestHostedWorkflowContract(t *testing.T, dutoTestDir string) {
 	}
 	if !shaRefPattern.MatchString(actionRef) {
 		t.Fatalf("missing hosted M2 workflow behavior: duto action reference must be a full SHA, got %q", actionRef)
+	}
+
+	for _, key := range []string{
+		"DUTO_TEST_PROVIDER_ENDPOINT",
+		"DUTO_TEST_PROVIDER_RESOURCE_GROUP",
+		"DUTO_TEST_PROVIDER_CLIENT_ID",
+		"DUTO_TEST_PROVIDER_CLIENT_SECRET",
+		"DUTO_TEST_PROVIDER_AUTH_URL",
+	} {
+		value := actionStep.Env[key]
+		if !strings.HasPrefix(value, "${{ secrets.") || !strings.HasSuffix(value, " }}") {
+			t.Fatalf("missing hosted M2 workflow behavior: Action env %q must come from a caller secret", key)
+		}
+	}
+
+	if got := actionStep.Env["DUTO_TEST_WORKSPACE_ROOT"]; got != "${{ github.workspace }}" {
+		t.Fatalf("missing hosted M2 workflow behavior: workspace root must come from github.workspace, got %q", got)
 	}
 }
 
