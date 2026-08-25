@@ -17,7 +17,11 @@ import (
 	dtool "github.com/PedroKlein/duto-ai/internal/tool"
 )
 
-const processWaitDelay = 2 * time.Second
+const (
+	processWaitDelay = 2 * time.Second
+	literalPathspecs = "--literal-pathspecs"
+	noPager          = "--no-pager"
+)
 
 var (
 	ErrMissingPath           = errors.New("path is required")
@@ -44,7 +48,7 @@ func GitLog(ctx context.Context, policy Policy, args LogArgs) (*LogResult, error
 
 	count = min(count, policy.MaxLogCount)
 
-	command := []string{"--no-pager", "--literal-pathspecs", "log", "--no-ext-diff", "--format=%H%x09%aI%x09%s", "-n", strconv.Itoa(count)}
+	command := []string{noPager, literalPathspecs, "log", "--no-ext-diff", "--format=%H%x09%aI%x09%s", "-n", strconv.Itoa(count)}
 	if args.Path != "" {
 		command = append(command, "--", filepath.ToSlash(args.Path))
 	}
@@ -79,7 +83,7 @@ func GitBlame(ctx context.Context, policy Policy, args BlameArgs) (*BlameResult,
 		return nil, ErrInvalidPolicy
 	}
 
-	command := []string{"--no-pager", "--literal-pathspecs", "blame", "--no-progress"}
+	command := []string{noPager, literalPathspecs, "blame", "--no-progress"}
 	if args.StartLine > 0 && args.EndLine > 0 {
 		command = append(command, fmt.Sprintf("-L%d,%d", args.StartLine, args.EndLine))
 	} else if args.StartLine > 0 {
@@ -110,7 +114,7 @@ func GitShow(ctx context.Context, policy Policy, args ShowArgs) (*ShowResult, er
 		return nil, ErrRefNotAllowed
 	}
 
-	output, truncated, err := run(ctx, policy, "git.read.show", "--no-pager", "show", "--no-ext-diff", "--no-textconv", "--format=fuller", args.Ref, "--")
+	output, truncated, err := run(ctx, policy, "git.read.show", noPager, "show", "--no-ext-diff", "--no-textconv", "--format=fuller", args.Ref, "--")
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +140,7 @@ func GitDiff(ctx context.Context, policy Policy, args DiffArgs) (*DiffResult, er
 		return nil, err
 	}
 
-	command := []string{"--no-pager", "--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"}
+	command := []string{noPager, literalPathspecs, "diff", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"}
 	if args.Ref != "" {
 		command = append(command, args.Ref)
 	}

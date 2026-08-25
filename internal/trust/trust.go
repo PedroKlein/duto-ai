@@ -76,6 +76,8 @@ type Decision struct {
 	AdmissionID   string
 	ControlSHA256 string
 	Transport     string
+	CheckoutRef   string
+	CheckoutSHA   string
 	Present       bool
 }
 
@@ -229,7 +231,15 @@ func Decode(data []byte, now time.Time) (Decision, error) {
 
 	sum := sha256.Sum256(data)
 
-	decision := Decision{Context: ContextUnknown, AdmissionID: evidence.Admission.ID, ControlSHA256: hex.EncodeToString(sum[:]), Transport: transportStaged, Present: true}
+	decision := Decision{
+		Context:       ContextUnknown,
+		AdmissionID:   evidence.Admission.ID,
+		ControlSHA256: hex.EncodeToString(sum[:]),
+		Transport:     transportStaged,
+		CheckoutRef:   evidence.Checkout.Ref,
+		CheckoutSHA:   evidence.Checkout.SHA,
+		Present:       true,
+	}
 	if !validCommon(evidence, now.UTC()) {
 		return decision, nil
 	}

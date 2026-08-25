@@ -16,6 +16,7 @@ import (
 )
 
 const (
+	writeToolName  = "files.write"
 	maxFileSize    = 1 << 20 // 1MB
 	maxFindResults = 100
 	maxGrepMatches = 50
@@ -24,8 +25,9 @@ const (
 var ErrInvalidPolicy = errors.New("invalid file tool policy")
 
 type Policy struct {
-	Root   string
-	Limits map[string]dtool.ToolLimit
+	Root      string
+	Limits    map[string]dtool.ToolLimit
+	Authoring *Authoring
 }
 
 // ReadArgs is the input schema for the files.read tool.
@@ -84,6 +86,7 @@ func RegisterAll(reg *dtool.Registry, policy Policy) error {
 		{"files.read", func() (tool.Tool, error) { return newReadTool(policy) }},
 		{"files.find", func() (tool.Tool, error) { return newFindTool(policy) }},
 		{"files.grep", func() (tool.Tool, error) { return newGrepTool(policy) }},
+		{writeToolName, func() (tool.Tool, error) { return newWriteTool(policy) }},
 	}
 
 	for _, t := range tools {
@@ -117,7 +120,11 @@ func normalizePolicy(policy Policy) (Policy, error) {
 	}
 
 	for name, limit := range policy.Limits {
-		if name != "files.find" && name != "files.grep" && name != "files.read" || limit.MaxCalls <= 0 || limit.Timeout <= 0 || limit.MaxRequestBytes < 0 || limit.MaxResultBytes <= 0 {
+		if name != "files.find" && name != "files.grep" && name != "files.read" && name != "files.write" || limit.MaxCalls <= 0 || limit.Timeout <= 0 || limit.MaxRequestBytes < 0 || limit.MaxResultBytes <= 0 {
+			return Policy{}, fmt.Errorf("%w: %s", ErrInvalidPolicy, name)
+		}
+
+		if name == writeToolName && policy.Authoring == nil {
 			return Policy{}, fmt.Errorf("%w: %s", ErrInvalidPolicy, name)
 		}
 	}
@@ -156,6 +163,18 @@ func newFindTool(policy Policy) (tool.Tool, error) {
 		},
 		func(ctx agent.Context, args FindArgs) (*FindResult, error) {
 			return FindFiles(ctx, policy, args.Pattern, args.Dir)
+		},
+	)
+}
+
+func newWriteTool(policy Policy) (tool.Tool, error) {
+	return functiontool.New[WriteArgs, *WriteResult](
+		functiontool.Config{
+			Name:        writeToolName,
+			Description: "Atomically create or replace one admitted regular file.",
+		},
+		func(ctx agent.Context, args WriteArgs) (*WriteResult, error) {
+			return policy.Authoring.Write(ctx, args)
 		},
 	)
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -19,9 +20,24 @@ import (
 
 var errToolBinding = errors.New("selected tool family has no valid trusted binding")
 
+type authoringRuntime struct {
+	files *files.Authoring
+	git   *gittool.Authoring
+}
+
 func buildToolRegistry(cfg *config.Config, compiled *plan.Plan) (*dtool.Registry, error) {
+	registry, _, err := buildToolRegistryForRun(context.Background(), cfg, compiled)
+	return registry, err
+}
+
+func buildToolRegistryForRun(ctx context.Context, cfg *config.Config, compiled *plan.Plan) (*dtool.Registry, *authoringRuntime, error) {
 	if cfg == nil || compiled == nil {
-		return nil, errToolBinding
+		return nil, nil, errToolBinding
+	}
+
+	authoring, err := prepareAuthoring(ctx, compiled)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	selected := selectedToolNames(compiled.Snapshot().Workflow)
@@ -31,8 +47,12 @@ func buildToolRegistry(cfg *config.Config, compiled *plan.Plan) (*dtool.Registry
 		family string
 		apply  func(*dtool.Registry, *config.Config, []string) error
 	}{
-		{family: "files", apply: registerFiles},
-		{family: "git", apply: registerGit},
+		{family: "files", apply: func(registry *dtool.Registry, cfg *config.Config, names []string) error {
+			return registerFiles(registry, cfg, names, authoring)
+		}},
+		{family: "git", apply: func(registry *dtool.Registry, cfg *config.Config, names []string) error {
+			return registerGit(registry, cfg, names, authoring)
+		}},
 		{family: "github", apply: registerGitHub},
 		{family: "web", apply: registerWeb},
 		{family: "shell", apply: registerShell},
@@ -44,14 +64,87 @@ func buildToolRegistry(cfg *config.Config, compiled *plan.Plan) (*dtool.Registry
 		}
 
 		if err := registration.apply(registry, cfg, names); err != nil {
-			return nil, fmt.Errorf("%s: %w", registration.family, err)
+			if authoring != nil {
+				_ = authoring.close()
+			}
+
+			return nil, nil, fmt.Errorf("%s: %w", registration.family, err)
 		}
 	}
 
-	return registry, nil
+	return registry, authoring, nil
 }
 
-func registerFiles(registry *dtool.Registry, cfg *config.Config, names []string) error {
+func prepareAuthoring(ctx context.Context, compiled *plan.Plan) (*authoringRuntime, error) {
+	spec := compiled.Authoring()
+	if spec == nil {
+		return nil, nil
+	}
+
+	gitAuthoring, err := gittool.NewAuthoring(ctx, gittool.AuthoringPolicy{
+		Root: spec.Root, AllowedPaths: spec.AllowedPaths, MaxChangedFiles: spec.MaxChangedFiles,
+		MaxCommitMessageBytes: spec.MaxCommitMessageBytes, MaxRecoveryBytes: spec.MaxTotalWriteBytes,
+		AuthorName: spec.CommitAuthorName, AuthorEmail: spec.CommitAuthorEmail, BaseRef: spec.BaseRef,
+		BaseSHA: spec.BaseSHA, EvidenceDirectory: compiled.EvidenceDirectory(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("admitting Git authoring repository: %w", err)
+	}
+
+	fileAuthoring, err := files.NewAuthoring(spec.Root, spec.AllowedPaths, spec.MaxChangedFiles, spec.MaxFileBytes, spec.MaxTotalWriteBytes)
+	if err != nil {
+		return nil, fmt.Errorf("constructing file authoring: %w", err)
+	}
+
+	if err := gitAuthoring.BindWriter(fileAuthoring); err != nil {
+		_ = fileAuthoring.Close()
+		return nil, fmt.Errorf("binding authored files to Git: %w", err)
+	}
+
+	return &authoringRuntime{files: fileAuthoring, git: gitAuthoring}, nil
+}
+
+func (a *authoringRuntime) finish(ctx context.Context, succeeded bool) error {
+	if a == nil {
+		return nil
+	}
+	defer a.close() //nolint:errcheck // the lifecycle result reports the meaningful verification or recovery error
+
+	var verifyErr error
+	if succeeded {
+		verifyErr = a.git.Verify(ctx)
+		if verifyErr == nil {
+			return nil
+		}
+	}
+
+	recoveryContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+
+	if err := a.git.Recover(recoveryContext, "execution"); err != nil {
+		return fmt.Errorf("recovering authored repository: %w", err)
+	}
+
+	if succeeded {
+		return fmt.Errorf("verifying authored repository: %w", verifyErr)
+	}
+
+	return nil
+}
+
+func (a *authoringRuntime) close() error {
+	if a == nil {
+		return nil
+	}
+
+	if err := a.files.Close(); err != nil {
+		return fmt.Errorf("closing file authoring: %w", err)
+	}
+
+	return nil
+}
+
+func registerFiles(registry *dtool.Registry, cfg *config.Config, names []string, authoring *authoringRuntime) error {
 	root, err := boundWorkspace(cfg, bindingWorkspace(cfg.ToolConfig.Files))
 	if err != nil {
 		return err
@@ -62,14 +155,19 @@ func registerFiles(registry *dtool.Registry, cfg *config.Config, names []string)
 		return err
 	}
 
-	if err := files.RegisterAll(registry, files.Policy{Root: root, Limits: limits}); err != nil {
+	policy := files.Policy{Root: root, Limits: limits}
+	if authoring != nil {
+		policy.Authoring = authoring.files
+	}
+
+	if err := files.RegisterAll(registry, policy); err != nil {
 		return fmt.Errorf("registering file tools: %w", err)
 	}
 
 	return nil
 }
 
-func registerGit(registry *dtool.Registry, cfg *config.Config, names []string) error {
+func registerGit(registry *dtool.Registry, cfg *config.Config, names []string, authoring *authoringRuntime) error {
 	binding := cfg.ToolConfig.Git
 
 	root, err := boundWorkspace(cfg, gitBindingWorkspace(binding))
@@ -82,7 +180,12 @@ func registerGit(registry *dtool.Registry, cfg *config.Config, names []string) e
 		return err
 	}
 
-	if err := gittool.RegisterAll(registry, gittool.Policy{Root: root, Refs: binding.Refs, AllowWorkingTree: binding.AllowWorkingTree, MaxLogCount: binding.MaxLogCount, Limits: limits}); err != nil {
+	policy := gittool.Policy{Root: root, Refs: binding.Refs, AllowWorkingTree: binding.AllowWorkingTree, MaxLogCount: binding.MaxLogCount, Limits: limits}
+	if authoring != nil {
+		policy.Authoring = authoring.git
+	}
+
+	if err := gittool.RegisterAll(registry, policy); err != nil {
 		return fmt.Errorf("registering Git tools: %w", err)
 	}
 
@@ -205,7 +308,7 @@ func boundWorkspace(cfg *config.Config, name string) (string, error) {
 	}
 
 	workspace, ok := cfg.Workspaces[name]
-	if !ok || workspace.Access != "read" || workspace.Root == "" {
+	if !ok || (workspace.Access != config.WorkspaceAccessRead && workspace.Access != config.WorkspaceAccessWrite) || workspace.Root == "" {
 		return "", errToolBinding
 	}
 

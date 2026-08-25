@@ -213,10 +213,24 @@ type Result struct {
 	Schema   Schema        `json:"schema"`
 }
 
+type Authoring struct {
+	Root                  string
+	AllowedPaths          []string
+	MaxChangedFiles       int
+	MaxFileBytes          int
+	MaxTotalWriteBytes    int
+	MaxCommitMessageBytes int
+	CommitAuthorName      string
+	CommitAuthorEmail     string
+	BaseRef               string
+	BaseSHA               string
+}
+
 type Plan struct {
 	json              []byte
 	digest            string
 	evidenceDirectory string
+	authoring         *Authoring
 }
 
 func Compile(cfg *config.Config, workflow *config.Workflow) (*Plan, error) {
@@ -287,6 +301,10 @@ func compile(cfg *config.Config, workflow *config.Workflow, decision trust.Decis
 		return nil, agentUseErr
 	}
 
+	if authoringErr := validateAuthoringScopes(agents, steps); authoringErr != nil {
+		return nil, authoringErr
+	}
+
 	if concurrencyErr := validateToolConcurrency(steps); concurrencyErr != nil {
 		return nil, fmt.Errorf("tool concurrency: %w", concurrencyErr)
 	}
@@ -339,7 +357,12 @@ func compile(cfg *config.Config, workflow *config.Workflow, decision trust.Decis
 		return nil, fmt.Errorf("encoding plan: %w", err)
 	}
 
-	return &Plan{json: encoded, digest: projection.Digest, evidenceDirectory: cfg.Evidence.Directory}, nil
+	return &Plan{
+		json:              encoded,
+		digest:            projection.Digest,
+		evidenceDirectory: cfg.Evidence.Directory,
+		authoring:         compileAuthoring(cfg, decision),
+	}, nil
 }
 
 func compilePromptResources(cfg *config.Config, workflow *config.Workflow) (map[string]string, []prompt.FrozenSkill, error) {
@@ -373,6 +396,38 @@ func (p *Plan) JSON() []byte {
 
 func (p *Plan) EvidenceDirectory() string {
 	return p.evidenceDirectory
+}
+
+func (p *Plan) Authoring() *Authoring {
+	if p == nil || p.authoring == nil {
+		return nil
+	}
+
+	value := *p.authoring
+	value.AllowedPaths = slices.Clone(p.authoring.AllowedPaths)
+
+	return &value
+}
+
+func compileAuthoring(cfg *config.Config, decision trust.Decision) *Authoring {
+	if cfg.M3 == nil {
+		return nil
+	}
+
+	workspace := cfg.Workspaces[cfg.M3.Authoring.Workspace]
+
+	return &Authoring{
+		Root:                  workspace.Root,
+		AllowedPaths:          slices.Clone(cfg.M3.Authoring.AllowedPaths),
+		MaxChangedFiles:       cfg.M3.Authoring.MaxChangedFiles,
+		MaxFileBytes:          cfg.M3.Authoring.MaxFileBytes,
+		MaxTotalWriteBytes:    cfg.M3.Authoring.MaxTotalWriteBytes,
+		MaxCommitMessageBytes: cfg.M3.Authoring.MaxCommitMessageBytes,
+		CommitAuthorName:      cfg.M3.Authoring.CommitAuthorName,
+		CommitAuthorEmail:     cfg.M3.Authoring.CommitAuthorEmail,
+		BaseRef:               decision.CheckoutRef,
+		BaseSHA:               decision.CheckoutSHA,
+	}
 }
 
 func (p *Plan) Text() []byte {

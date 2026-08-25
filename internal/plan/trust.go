@@ -170,6 +170,40 @@ func m3PolicyDigest(cfg *config.Config, toolPolicy compiledToolPolicy) string {
 	return hex.EncodeToString(digest[:])
 }
 
+func validateAuthoringScopes(agents []Agent, steps []Step) error {
+	validate := func(workspaces []Workspace, tools ToolScope) error {
+		hasWrite := slices.ContainsFunc(workspaces, func(workspace Workspace) bool {
+			return workspace.Access == config.WorkspaceAccessWrite
+		})
+
+		hasMutation := slices.ContainsFunc(tools.Definitions, func(definition ToolDefinition) bool {
+			return slices.Contains(definition.Capabilities, string(trust.CapabilityWorkspaceMutate)) ||
+				slices.Contains(definition.Capabilities, string(trust.CapabilityGitMutate))
+		})
+		if hasWrite != hasMutation {
+			return ErrUnsupportedCapability
+		}
+
+		return nil
+	}
+
+	for _, agent := range agents {
+		if err := validate(agent.Workspaces, agent.Tools); err != nil {
+			return fmt.Errorf("agent %q authoring scope: %w", agent.Name, err)
+		}
+	}
+
+	for _, step := range steps {
+		if step.Agent == "" {
+			if err := validate(step.Workspaces, step.Tools); err != nil {
+				return fmt.Errorf("step %q authoring scope: %w", step.ID, err)
+			}
+		}
+	}
+
+	return nil
+}
+
 func validateWorkspaceRequests(cfg *config.Config, workflow *config.Workflow) error {
 	validate := func(refs []config.WorkspaceRef) error {
 		seen := make(map[string]struct{}, len(refs))

@@ -461,12 +461,15 @@ func runAdmittedWorkflow(ctx context.Context, cfg *config.Config, compiled *plan
 		return nil, executionError(err)
 	}
 
-	registry, err := buildToolRegistry(cfg, compiled)
+	registry, authoring, err := buildToolRegistryForRun(ctx, cfg, compiled)
 	if err != nil {
 		return nil, executionError(err)
 	}
 
 	result, err := runtime.RunWithInputsAndToolsets(ctx, compiled, bundledModelResolver(cfg), registry.FilteredToolset, inputs)
+	if lifecycleErr := authoring.finish(ctx, err == nil); lifecycleErr != nil {
+		err = lifecycleErr
+	}
 
 	output, encodeErr := formatRunResult(result, format)
 	if encodeErr != nil {

@@ -25,6 +25,7 @@ type Policy struct {
 	AllowWorkingTree bool
 	MaxLogCount      int
 	Limits           map[string]dtool.ToolLimit
+	Authoring        *Authoring
 }
 
 // LogArgs is the input schema for the git.read.log tool.
@@ -90,6 +91,7 @@ func RegisterAll(reg *dtool.Registry, policy Policy) error {
 		{"git.read.blame", func() (tool.Tool, error) { return newBlameTool(policy) }},
 		{"git.read.show", func() (tool.Tool, error) { return newShowTool(policy) }},
 		{"git.read.diff", func() (tool.Tool, error) { return newDiffTool(policy) }},
+		{"git.write.commit", func() (tool.Tool, error) { return newCommitTool(policy) }},
 	}
 
 	for _, t := range tools {
@@ -148,7 +150,7 @@ func validateToolLimits(limits map[string]dtool.ToolLimit) error {
 	}
 
 	for name, limit := range limits {
-		if name != "git.read.blame" && name != "git.read.diff" && name != "git.read.log" && name != "git.read.show" || limit.MaxCalls <= 0 || limit.Timeout <= 0 || limit.MaxRequestBytes < 0 || limit.MaxResultBytes <= 0 {
+		if name != "git.read.blame" && name != "git.read.diff" && name != "git.read.log" && name != "git.read.show" && name != "git.write.commit" || limit.MaxCalls <= 0 || limit.Timeout <= 0 || limit.MaxRequestBytes < 0 || limit.MaxResultBytes <= 0 {
 			return fmt.Errorf("%w: %s", ErrInvalidPolicy, name)
 		}
 	}
@@ -197,6 +199,22 @@ func newShowTool(policy Policy) (tool.Tool, error) {
 		},
 		func(ctx agent.Context, args ShowArgs) (*ShowResult, error) {
 			return GitShow(ctx, policy, args)
+		},
+	)
+}
+
+func newCommitTool(policy Policy) (tool.Tool, error) {
+	if policy.Authoring == nil {
+		return nil, ErrInvalidPolicy
+	}
+
+	return functiontool.New[CommitArgs, *CommitResult](
+		functiontool.Config{
+			Name:        "git.write.commit",
+			Description: "Create the one admitted deterministic local commit from files written in this activation.",
+		},
+		func(ctx agent.Context, args CommitArgs) (*CommitResult, error) {
+			return policy.Authoring.Commit(ctx, args)
 		},
 	)
 }
