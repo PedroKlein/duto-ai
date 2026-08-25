@@ -2,7 +2,7 @@
 
 `duto-ai` is a CLI and runtime for bounded, typed AI workflow DAGs. It strictly decodes a trusted runtime configuration and a portable workflow, compiles an immutable effective plan, and executes that plan with [ADK Go v2](https://github.com/google/adk-go).
 
-The local CLI remains the primary interface. M2 adds an official one-shot GitHub Action adapter in this repository, with its contract frozen in [ADR 009](docs/adr/009-one-shot-github-action.md). Workspace or Git mutation and remote publication are M3. Durable pause/resume, cross-runner recovery, and asynchronous reply correlation are future hosting work.
+The local CLI remains the primary interface. M2 ships an official one-shot GitHub Action adapter in this repository, with its contract frozen in [ADR 009](docs/adr/009-one-shot-github-action.md) and delivery completion recorded in [ADR 010](docs/adr/010-m2-delivery-completion.md). Workspace or Git mutation and remote publication are the next milestone, M3. Durable pause/resume, cross-runner recovery, and asynchronous reply correlation are future hosting work.
 
 ## Build and inspect a workflow
 
@@ -303,7 +303,7 @@ The manifest is written last and includes the plan digest plus file sizes and SH
 |---|---|
 | M1, shipped | Local `validate`, `plan`, and one-shot `run`; strict v1 documents; bounded typed DAGs; read/process tools; native finite subagents; typed results and evidence |
 | M2, shipped | Official one-shot GitHub Action mapping trusted host inputs to the same CLI contract, then projecting summaries, outputs, and artifacts |
-| M3 | Admitted workspace and Git mutation, staged safe outputs, and trusted publication |
+| M3, next | Admitted workspace and Git mutation, staged safe outputs, and trusted publication |
 | Future durable hosting | Persistent pause/resume, encrypted host state, cross-runner recovery, lifecycle reconciliation, and asynchronous replies |
 
 ## Development

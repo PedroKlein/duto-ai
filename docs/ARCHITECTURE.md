@@ -6,7 +6,7 @@ This document explains the shipped CLI-first M1 runtime. [ADR 008](adr/008-produ
 
 Duto validates, inspects, and executes a finite typed workflow. Workflow generation, open-ended planning, backlog management, and dynamic graph expansion belong to callers.
 
-The core is host-neutral. M1 is a local process interface. M2 is the official one-shot GitHub Action adapter in this repository, with contract details frozen in [ADR 009](adr/009-one-shot-github-action.md). Mutation and publication are M3. Durable sessions and cross-runner recovery remain future work.
+The core is host-neutral. M1 is a local process interface. M2 is the shipped one-shot GitHub Action adapter in this repository, with contract details frozen in [ADR 009](adr/009-one-shot-github-action.md) and delivery completion recorded in [ADR 010](adr/010-m2-delivery-completion.md). Mutation and publication are M3. Durable sessions and cross-runner recovery remain future work.
 
 ```text
 caller
@@ -157,7 +157,7 @@ Live model or hosted acceptance can supplement those gates only after they pass.
 
 ## Later delivery layers
 
-M2 packages the same one-shot CLI and runtime contract as the official GitHub Action adapter (`action/install.sh`, `action/prepare.sh`, `action/run.sh`, and `action/project.sh`). It owns event-to-input mapping, permissions, summaries, outputs, and artifact upload.
+M2 ships the same one-shot CLI and runtime contract as the official GitHub Action adapter (`action/install.sh`, `action/prepare.sh`, `action/run.sh`, and `action/project.sh`). It owns event-to-input mapping, permissions, summaries, outputs, and artifact upload.
 
 The frozen M2 reference surface is:
 
@@ -169,6 +169,6 @@ M2 also fixes path confinement, caller-owned checkout and permission ceiling, au
 
 M2 excludes writes, SafeOutputs application, durable state, pause/resume, cross-runner recovery, and async replies.
 
-M3 adds admitted workspace and Git mutation, staged safe-output requests, and a fixed trusted publisher. It does not retroactively grant write authority to M1 tools.
+M3 is the next unimplemented milestone. It adds admitted workspace and Git mutation, staged safe-output requests, and a fixed trusted publisher. It does not retroactively grant write authority to M1 tools.
 
 A future durable-host milestone may add persistence, pause/resume, encrypted host state, cross-runner recovery, effect replay, and asynchronous reply correlation. None of those facilities is required or implied by the current one-shot evidence bundle.

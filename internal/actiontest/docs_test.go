@@ -1,6 +1,8 @@
 package actiontest_test
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -87,6 +89,63 @@ func TestDocs_ActionReference(t *testing.T) {
 	}
 }
 
+func TestDocs_MilestoneStatus(t *testing.T) {
+	t.Parallel()
+
+	const sealedADR009Digest = "f4f9383040599afe51550bd86ed82a91d8f8515d15656e2b1482a771fdf18901"
+
+	root := repoRoot(t)
+	readme := readDocFile(t, "README.md")
+	architecture := readDocFile(t, filepath.Join("docs", "ARCHITECTURE.md"))
+	adr008 := readDocFile(t, filepath.Join("docs", "adr", "008-product-center-and-delivery-layers.md"))
+	adr009Path := filepath.Join(root, "docs", "adr", "009-one-shot-github-action.md")
+
+	adr009, err := os.ReadFile(adr009Path)
+	if err != nil {
+		t.Fatalf("docs setup failure: read ADR 009: %v", err)
+	}
+
+	if got := fmt.Sprintf("%x", sha256.Sum256(adr009)); got != sealedADR009Digest {
+		t.Errorf("sealed M2 contract changed: ADR 009 SHA-256 = %s, want %s", got, sealedADR009Digest)
+	}
+
+	completionPath := filepath.Join(root, "docs", "adr", "010-m2-delivery-completion.md")
+
+	completionBytes, err := os.ReadFile(completionPath)
+	if err != nil {
+		t.Errorf("missing M2 completion record: read docs/adr/010-m2-delivery-completion.md: %v", err)
+	}
+
+	completion := string(completionBytes)
+
+	checks := []struct {
+		name     string
+		content  string
+		fragment string
+	}{
+		{name: "README completion link", content: readme, fragment: "[ADR 010](docs/adr/010-m2-delivery-completion.md)"},
+		{name: "README next milestone", content: readme, fragment: "| M3, next |"},
+		{name: "architecture completion link", content: architecture, fragment: "[ADR 010](adr/010-m2-delivery-completion.md)"},
+		{name: "architecture next milestone", content: architecture, fragment: "M3 is the next unimplemented milestone"},
+		{name: "ADR 008 status", content: adr008, fragment: "- **Status:** Accepted; M1 and M2 shipped"},
+		{name: "ADR 008 completion link", content: adr008, fragment: "[ADR 010](010-m2-delivery-completion.md)"},
+		{name: "completion status", content: completion, fragment: "- **Status:** Accepted; M2 shipped"},
+		{name: "completion Action revision", content: completion, fragment: "`462e48601658765e96448a147fbcd029f034e329`"},
+		{name: "completion binary release", content: completion, fragment: "`v0.3.1`"},
+		{name: "completion sealed digest", content: completion, fragment: sealedADR009Digest},
+		{name: "completion M3 entry", content: completion, fragment: "M3 is the next unimplemented milestone"},
+	}
+	for _, check := range checks {
+		if !strings.Contains(check.content, check.fragment) {
+			t.Errorf("stale or missing M2 status documentation: %s must contain %q", check.name, check.fragment)
+		}
+	}
+
+	if strings.Contains(adr008, "M2, M3, optional persistence, and durable-host behavior remain unimplemented") {
+		t.Errorf("stale M2 status documentation: ADR 008 still says M2 is unimplemented")
+	}
+}
+
 func TestDocs_Examples(t *testing.T) {
 	cliPath := buildCLI(t)
 	root := repoRoot(t)
@@ -123,6 +182,7 @@ func TestDocs_Links(t *testing.T) {
 		"CONTRIBUTING.md",
 		filepath.Join("docs", "ARCHITECTURE.md"),
 		filepath.Join("docs", "DEVELOPMENT.md"),
+		filepath.Join("docs", "adr", "010-m2-delivery-completion.md"),
 	}
 
 	missing := make([]string, 0)

@@ -1,6 +1,6 @@
 # ADR 008: CLI-first workflow runtime and delivery layers
 
-- **Status:** Accepted; M1 shipped
+- **Status:** Accepted; M1 and M2 shipped
 - **Date:** 2026-08-26
 - **Scope:** Product center, host-adapter relationship, planning boundary, milestone order, and disposition of durable-session decisions
 
@@ -32,7 +32,7 @@ GitHub Actions remains a first-class official adapter. It maps trusted event inp
 
 ## Implementation status
 
-The CLI-first M1 layer is implemented. M2, M3, optional persistence, and durable-host behavior remain unimplemented and must not be inferred from the M1 binary or evidence bundle.
+The CLI-first M1 layer and the one-shot GitHub Action M2 layer are implemented. [ADR 010](010-m2-delivery-completion.md) records M2 completion without changing the sealed Action contract. M3, optional persistence, and durable-host behavior remain unimplemented and must not be inferred from the current binary or evidence bundle.
 
 ## Delivery layers
 
@@ -111,6 +111,7 @@ M1 includes strict host-neutral workflows, typed static DAGs, exact models/tools
 
 ### M2: First-class one-shot GitHub Action
 
+**Status:** shipped; see [ADR 010](010-m2-delivery-completion.md).
 **Purpose:** package the same one-shot JSON CLI contract as an official least-privilege Action adapter.
 **Entry:** M1 complete and a fixed Action input/event/permission contract.
 **Exit:** trusted event data maps to declared inputs; CLI status/result maps to summary, outputs, and artifacts; M2-owned scenarios and security checks pass without durable conversation state.
@@ -119,6 +120,7 @@ M1 includes strict host-neutral workflows, typed static DAGs, exact models/tools
 
 ### M3: Bounded authoring and safe outputs
 
+**Status:** next milestone; implementation has not started.
 **Purpose:** add admitted one-activation workspace/Git mutation and staged safe outputs.
 **Entry:** M2 complete, fixed mutation/publisher policy, and deterministic negative security coverage.
 **Exit:** workspace and Git guards enforce exact authority; agent jobs stage typed requests; a trusted publisher applies admitted effects; recovery artifacts remain bounded to one activation.
