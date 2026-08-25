@@ -152,11 +152,11 @@ jobs:
           persist-credentials: false
 
       - name: Run duto-ai
-        uses: PedroKlein/duto-ai@432887efbfac9e4cec0bd6bedadb85999772740f
+        uses: PedroKlein/duto-ai@462e48601658765e96448a147fbcd029f034e329
         with:
           workflow: .github/ai-workflows/scenarios/template-variables.yaml
           config: .github/ai-workflows/config-m2.yaml
-          version: v0.2.2
+          version: v0.3.1
           evidence-retention-days: "7"
 ```
 
@@ -302,7 +302,7 @@ The manifest is written last and includes the plan digest plus file sizes and SH
 | Milestone | Scope |
 |---|---|
 | M1, shipped | Local `validate`, `plan`, and one-shot `run`; strict v1 documents; bounded typed DAGs; read/process tools; native finite subagents; typed results and evidence |
-| M2 (contract frozen, implementation in progress) | Official one-shot GitHub Action mapping trusted host inputs to the same CLI contract, then projecting summaries, outputs, and artifacts |
+| M2, shipped | Official one-shot GitHub Action mapping trusted host inputs to the same CLI contract, then projecting summaries, outputs, and artifacts |
 | M3 | Admitted workspace and Git mutation, staged safe outputs, and trusted publication |
 | Future durable hosting | Persistent pause/resume, encrypted host state, cross-runner recovery, lifecycle reconciliation, and asynchronous replies |
 

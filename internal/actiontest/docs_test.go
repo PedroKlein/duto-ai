@@ -46,6 +46,18 @@ func TestDocs_ActionReference(t *testing.T) {
 		t.Fatalf("missing docs Action reference behavior: README workflow example must pin PedroKlein/duto-ai to a full SHA")
 	}
 
+	if !strings.Contains(readme, "uses: PedroKlein/duto-ai@462e48601658765e96448a147fbcd029f034e329") {
+		t.Fatalf("missing docs Action reference behavior: README must pin the hosted-verified Action revision")
+	}
+
+	if !strings.Contains(readme, "version: v0.3.1") {
+		t.Fatalf("missing docs Action reference behavior: README must use the hosted-verified binary release")
+	}
+
+	if !strings.Contains(readme, "| M2, shipped |") {
+		t.Fatalf("missing docs Action reference behavior: README milestone table must mark M2 shipped")
+	}
+
 	if regexp.MustCompile(`(?m)^\s*uses:\s*[^@\s]+@v[0-9]+`).MatchString(readme) {
 		t.Fatalf("missing docs Action reference behavior: README must not use moving major-tag Action references")
 	}
