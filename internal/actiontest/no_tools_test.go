@@ -30,14 +30,13 @@ func TestAction_NoToolsTracer(t *testing.T) {
 	cmd := exec.Command("bash", runScript, fakeBinary)
 	cmd.Dir = root
 
+	runStep := actionStepsByID(loadActionMetadata(t).Runs.Steps)["run"]
 	env := append(
 		os.Environ(),
 		"GITHUB_WORKSPACE="+workspace,
 		"RUNNER_TEMP="+t.TempDir(),
-		"INPUT_WORKFLOW=workflow.yaml",
-		"INPUT_CONFIG=config.yaml",
-		"INPUT_VERSION=v0.2.2",
-		"INPUT_EVIDENCE_RETENTION_DAYS=7",
+		actionStepInputEnv(t, runStep, "INPUT_WORKFLOW", "workflow", "workflow.yaml"),
+		actionStepInputEnv(t, runStep, "INPUT_CONFIG", "config", "config.yaml"),
 		"DUTO_ACTION_INPUTS_FILE="+filepath.Join(workspace, "inputs.json"),
 		"DUTO_ACTION_EVIDENCE_DIR="+evidenceDir,
 		"DUTO_FAKE_TRACE_FILE="+traceFile,
@@ -83,6 +82,17 @@ func TestAction_NoToolsTracer(t *testing.T) {
 			t.Fatalf("missing no-tools Action behavior: expected fake binary args to include %q\nargs: %s", fragment, traceLine)
 		}
 	}
+}
+
+func actionStepInputEnv(t *testing.T, step actionStep, envName, inputName, value string) string {
+	t.Helper()
+
+	wantExpression := "${{ inputs." + inputName + " }}"
+	if got := step.Env[envName]; got != wantExpression {
+		t.Fatalf("missing composite Action input transport: step %q env %q\nwant: %q\ngot:  %q", step.ID, envName, wantExpression, got)
+	}
+
+	return envName + "=" + value
 }
 
 func writeFixtureFile(t *testing.T, src, dst string, mode os.FileMode) {

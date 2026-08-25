@@ -55,7 +55,8 @@ runs:
         GITHUB_API_URL: ${{ github.api_url }}
         GITHUB_TOKEN: ${{ github.token }}
         INPUT_VERSION: ${{ inputs.version }}
-      run: bash "${{ github.action_path }}/action/install.sh"
+        DUTO_ACTION_PATH: ${{ github.action_path }}
+      run: bash "${DUTO_ACTION_PATH}/action/install.sh"
 
     - name: Prepare trusted workflow inputs
       id: prepare
@@ -74,7 +75,10 @@ runs:
         GITHUB_EVENT_PATH: ${{ github.event_path }}
         GITHUB_API_URL: ${{ github.api_url }}
         GITHUB_TOKEN: ${{ github.token }}
-      run: bash "${{ github.action_path }}/action/prepare.sh"
+        INPUT_WORKFLOW: ${{ inputs.workflow }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        DUTO_ACTION_PATH: ${{ github.action_path }}
+      run: bash "${DUTO_ACTION_PATH}/action/prepare.sh"
 
     - name: Run duto-ai
       id: run
@@ -82,20 +86,25 @@ runs:
       continue-on-error: true
       env:
         GITHUB_TOKEN: ${{ github.token }}
+        INPUT_WORKFLOW: ${{ inputs.workflow }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        DUTO_ACTION_PATH: ${{ github.action_path }}
         DUTO_ACTION_RESULT_FILE: ${{ runner.temp }}/duto-action-result.json
         DUTO_ACTION_RUNTIME_EVIDENCE_DIR: ${{ runner.temp }}/duto-runtime-evidence
-      run: bash "${{ github.action_path }}/action/run.sh" "${{ env.DUTO_ACTION_BIN }}"
+      run: bash "${DUTO_ACTION_PATH}/action/run.sh" "${DUTO_ACTION_BIN}"
 
     - name: Project Action outputs and redacted evidence
       id: project
       if: always()
       shell: bash
       env:
+        INPUT_EVIDENCE_RETENTION_DAYS: ${{ inputs.evidence-retention-days }}
+        DUTO_ACTION_PATH: ${{ github.action_path }}
         DUTO_ACTION_RESULT_FILE: ${{ runner.temp }}/duto-action-result.json
         DUTO_ACTION_RUNTIME_EVIDENCE_DIR: ${{ runner.temp }}/duto-runtime-evidence
         DUTO_ACTION_ACTION_EVIDENCE_DIR: ${{ runner.temp }}/duto-action-evidence
         DUTO_ACTION_WORKFLOW_DIGEST_PREFIX: ${{ github.workflow_sha }}
-      run: bash "${{ github.action_path }}/action/project.sh"
+      run: bash "${DUTO_ACTION_PATH}/action/project.sh"
 
     - name: Upload redacted Action evidence
       id: upload

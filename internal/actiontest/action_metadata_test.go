@@ -32,11 +32,12 @@ type actionRuns struct {
 }
 
 type actionStep struct {
-	ID              string `yaml:"id"`
-	If              string `yaml:"if"`
-	Run             string `yaml:"run"`
-	Uses            string `yaml:"uses"`
-	ContinueOnError bool   `yaml:"continue-on-error"`
+	ID              string            `yaml:"id"`
+	If              string            `yaml:"if"`
+	Run             string            `yaml:"run"`
+	Uses            string            `yaml:"uses"`
+	Env             map[string]string `yaml:"env"`
+	ContinueOnError bool              `yaml:"continue-on-error"`
 }
 
 func TestAction_Metadata(t *testing.T) {
@@ -99,6 +100,67 @@ func TestAction_Metadata(t *testing.T) {
 	}
 }
 
+func TestAction_InputWiring(t *testing.T) {
+	action := loadActionMetadata(t)
+	steps := actionStepsByID(action.Runs.Steps)
+
+	want := map[string]map[string]string{
+		"install": {
+			"INPUT_VERSION": "${{ inputs.version }}",
+		},
+		"prepare": {
+			"INPUT_WORKFLOW": "${{ inputs.workflow }}",
+			"INPUT_CONFIG":   "${{ inputs.config }}",
+		},
+		"run": {
+			"INPUT_WORKFLOW": "${{ inputs.workflow }}",
+			"INPUT_CONFIG":   "${{ inputs.config }}",
+		},
+		"project": {
+			"INPUT_EVIDENCE_RETENTION_DAYS": "${{ inputs.evidence-retention-days }}",
+		},
+	}
+
+	for stepID, env := range want {
+		step, ok := steps[stepID]
+		if !ok {
+			t.Fatalf("missing action input wiring behavior: step %q is absent", stepID)
+		}
+
+		for name, value := range env {
+			if got := step.Env[name]; got != value {
+				t.Errorf("missing action input wiring behavior: step %q env %q\nwant: %q\ngot:  %q", stepID, name, value, got)
+			}
+		}
+	}
+}
+
+func TestAction_ShellCommandsUseEnvironmentTransport(t *testing.T) {
+	action := loadActionMetadata(t)
+	steps := actionStepsByID(action.Runs.Steps)
+
+	for _, step := range action.Runs.Steps {
+		if strings.Contains(step.Run, "${{") {
+			t.Errorf("missing safe Action command transport: step %q interpolates an expression in run", step.ID)
+		}
+	}
+
+	for _, stepID := range []string{"install", "prepare", "run", "project"} {
+		step, ok := steps[stepID]
+		if !ok {
+			t.Fatalf("missing safe Action command transport: step %q is absent", stepID)
+		}
+
+		if got := step.Env["DUTO_ACTION_PATH"]; got != "${{ github.action_path }}" {
+			t.Errorf("missing safe Action command transport: step %q must receive github.action_path through env, got %q", stepID, got)
+		}
+	}
+
+	if run := steps["run"].Run; !strings.Contains(run, `"${DUTO_ACTION_BIN}"`) {
+		t.Errorf("missing safe Action command transport: run step must pass DUTO_ACTION_BIN through the shell environment\nrun: %s", run)
+	}
+}
+
 func TestAction_Composition(t *testing.T) {
 	action := loadActionMetadata(t)
 
@@ -158,6 +220,15 @@ func TestAction_Composition(t *testing.T) {
 	if !strings.Contains(finalExit.Run, "DUTO_ACTION_RUN_EXIT_CODE") {
 		t.Fatalf("missing action composition behavior: final exit step must restore DUTO_ACTION_RUN_EXIT_CODE")
 	}
+}
+
+func actionStepsByID(steps []actionStep) map[string]actionStep {
+	byID := make(map[string]actionStep, len(steps))
+	for _, step := range steps {
+		byID[step.ID] = step
+	}
+
+	return byID
 }
 
 func loadActionMetadata(t *testing.T) actionMetadataFile {
