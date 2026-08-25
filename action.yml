@@ -51,7 +51,7 @@ runs:
         RUNNER_OS: ${{ runner.os }}
         RUNNER_ARCH: ${{ runner.arch }}
         RUNNER_TEMP: ${{ runner.temp }}
-        GITHUB_REPOSITORY: ${{ github.repository }}
+        DUTO_ACTION_REPOSITORY: ${{ github.action_repository }}
         GITHUB_API_URL: ${{ github.api_url }}
         GITHUB_TOKEN: ${{ github.token }}
         INPUT_VERSION: ${{ inputs.version }}

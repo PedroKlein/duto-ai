@@ -106,7 +106,8 @@ func TestAction_InputWiring(t *testing.T) {
 
 	want := map[string]map[string]string{
 		"install": {
-			"INPUT_VERSION": "${{ inputs.version }}",
+			"INPUT_VERSION":          "${{ inputs.version }}",
+			"DUTO_ACTION_REPOSITORY": "${{ github.action_repository }}",
 		},
 		"prepare": {
 			"INPUT_WORKFLOW": "${{ inputs.workflow }}",

@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	installerVersionTag = "v1.2.3"
-	installerToken      = "TOKEN_CANARY_INSTALLER"
+	installerVersionTag       = "v1.2.3"
+	installerToken            = "TOKEN_CANARY_INSTALLER"
+	installerActionRepository = "action-owner/duto-action"
 )
 
 type installerPlatformCase struct {
@@ -103,16 +104,22 @@ func TestInstaller_AuthenticatedTagAssetMetadataAndUniqueAsset(t *testing.T) {
 		run := runInstaller(t, installerRunOptions{platform: linuxX64})
 		assertInstallerSuccess(t, run, "missing installer behavior: authenticated exact tag/asset metadata must install Linux-X64 through release-asset API")
 
-		if !containsAll(run.curlLog, "/releases/tags/"+installerVersionTag) {
-			t.Fatalf("missing installer behavior: metadata request must target exact release tag %s\ncurl log:\n%s", installerVersionTag, run.curlLog)
+		releaseURL := fmt.Sprintf("url=https://api.example.invalid/repos/%s/releases/tags/%s", installerActionRepository, installerVersionTag)
+		if !containsAll(run.curlLog, releaseURL) {
+			t.Fatalf("missing installer behavior: metadata request must target exact release tag %s in the Action repository\ncurl log:\n%s", installerVersionTag, run.curlLog)
+		}
+
+		callerReleasePath := fmt.Sprintf("/repos/%s/%s/releases/", defaultRepositoryOwner, defaultRepositoryName)
+		if strings.Contains(run.curlLog, callerReleasePath) {
+			t.Fatalf("missing installer behavior: release requests must not target the caller repository\ncurl log:\n%s", run.curlLog)
 		}
 
 		if strings.Contains(run.curlLog, "/releases/latest") {
 			t.Fatalf("missing installer behavior: latest lookup is forbidden\ncurl log:\n%s", run.curlLog)
 		}
 
-		if !containsAll(run.curlLog, fmt.Sprintf("/releases/assets/%d", linuxX64.assetID)) {
-			t.Fatalf("missing installer behavior: download must use authenticated release-asset API id %d\ncurl log:\n%s", linuxX64.assetID, run.curlLog)
+		if !containsAll(run.curlLog, fmt.Sprintf("/repos/%s/releases/assets/%d", installerActionRepository, linuxX64.assetID)) {
+			t.Fatalf("missing installer behavior: download must use authenticated release-asset API id %d in the Action repository\ncurl log:\n%s", linuxX64.assetID, run.curlLog)
 		}
 
 		if !containsAll(run.curlLog, "auth=Authorization: Bearer "+installerToken) {
@@ -159,8 +166,8 @@ func TestInstaller_DownloadHandles200And302RedirectSafety(t *testing.T) {
 		run := runInstaller(t, installerRunOptions{platform: linuxX64, curlMode: "direct200"})
 		assertInstallerSuccess(t, run, "missing installer behavior: installer must handle release-asset API 200 stream downloads")
 
-		if !containsAll(run.curlLog, fmt.Sprintf("url=https://api.example.invalid/repos/%s/%s/releases/assets/%d auth=Authorization: Bearer %s", defaultRepositoryOwner, defaultRepositoryName, linuxX64.assetID, installerToken)) {
-			t.Fatalf("missing installer behavior: direct 200 download must authenticate release-asset API request\ncurl log:\n%s", run.curlLog)
+		if !containsAll(run.curlLog, fmt.Sprintf("url=https://api.example.invalid/repos/%s/releases/assets/%d auth=Authorization: Bearer %s", installerActionRepository, linuxX64.assetID, installerToken)) {
+			t.Fatalf("missing installer behavior: direct 200 download must authenticate the Action repository release-asset API request\ncurl log:\n%s", run.curlLog)
 		}
 
 		if strings.Contains(run.curlLog, "url=https://downloads.example.invalid/") {
@@ -172,9 +179,9 @@ func TestInstaller_DownloadHandles200And302RedirectSafety(t *testing.T) {
 		run := runInstaller(t, installerRunOptions{platform: linuxX64, curlMode: "redirect302"})
 		assertInstallerSuccess(t, run, "missing installer behavior: installer must handle release-asset API 302 redirects")
 
-		assetAPIURL := fmt.Sprintf("url=https://api.example.invalid/repos/%s/%s/releases/assets/%d auth=Authorization: Bearer %s", defaultRepositoryOwner, defaultRepositoryName, linuxX64.assetID, installerToken)
+		assetAPIURL := fmt.Sprintf("url=https://api.example.invalid/repos/%s/releases/assets/%d auth=Authorization: Bearer %s", installerActionRepository, linuxX64.assetID, installerToken)
 		if !containsAll(run.curlLog, assetAPIURL) {
-			t.Fatalf("missing installer behavior: redirect path must authenticate first release-asset API request\ncurl log:\n%s", run.curlLog)
+			t.Fatalf("missing installer behavior: redirect path must authenticate the Action repository release-asset API request\ncurl log:\n%s", run.curlLog)
 		}
 
 		redirectURL := fmt.Sprintf("url=https://downloads.example.invalid/%s auth=", linuxX64.assetName)
@@ -498,6 +505,7 @@ func runInstaller(t *testing.T, opts installerRunOptions) installerRunResult {
 		"RUNNER_ARCH":               opts.platform.runnerArch,
 		"GITHUB_REPOSITORY":         defaultRepositoryOwner + "/" + defaultRepositoryName,
 		"GITHUB_REPOSITORY_OWNER":   defaultRepositoryOwner,
+		"DUTO_ACTION_REPOSITORY":    installerActionRepository,
 		"GITHUB_API_URL":            "https://api.example.invalid",
 		"GITHUB_SERVER_URL":         "https://github.example.invalid",
 		"GITHUB_TOKEN":              installerToken,

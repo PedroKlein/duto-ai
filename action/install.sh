@@ -46,7 +46,7 @@ require_env RUNNER_TEMP
 require_env RUNNER_OS
 require_env RUNNER_ARCH
 require_env GITHUB_API_URL
-require_env GITHUB_REPOSITORY
+require_env DUTO_ACTION_REPOSITORY
 require_env GITHUB_TOKEN
 require_env GITHUB_ENV
 require_env INPUT_VERSION
@@ -101,7 +101,7 @@ cleanup() {
 trap cleanup EXIT
 
 release_json="${work_dir}/release.json"
-release_url="${api_url}/repos/${GITHUB_REPOSITORY}/releases/tags/${version}"
+release_url="${api_url}/repos/${DUTO_ACTION_REPOSITORY}/releases/tags/${version}"
 
 curl \
   --silent \
@@ -134,7 +134,7 @@ if [[ ! "$asset_digest" =~ ^sha256:[0-9a-fA-F]{64}$ ]]; then
 fi
 
 archive_path="${work_dir}/${asset_name}"
-asset_url="${api_url}/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}"
+asset_url="${api_url}/repos/${DUTO_ACTION_REPOSITORY}/releases/assets/${asset_id}"
 
 asset_headers="${work_dir}/asset-headers.txt"
 asset_stage="${work_dir}/asset-download.bin"
