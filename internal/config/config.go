@@ -14,11 +14,13 @@ import (
 )
 
 const (
-	Version       = 1
-	yamlStringTag = "!!str"
-	yamlIntTag    = "!!int"
-	yamlFloatTag  = "!!float"
-	yamlBoolTag   = "!!bool"
+	Version              = 1
+	WorkspaceAccessRead  = "read"
+	WorkspaceAccessWrite = "write"
+	yamlStringTag        = "!!str"
+	yamlIntTag           = "!!int"
+	yamlFloatTag         = "!!float"
+	yamlBoolTag          = "!!bool"
 )
 
 const (
@@ -69,6 +71,39 @@ type Workspace struct {
 	Access string
 }
 
+type M3Admission struct {
+	ID           string   `json:"id"`
+	Contexts     []string `json:"contexts"`
+	Capabilities []string `json:"capabilities"`
+}
+
+type M3Authoring struct {
+	Workspace             string   `json:"workspace"`
+	AllowedPaths          []string `json:"allowed_paths"`
+	MaxChangedFiles       int      `json:"max_changed_files"`
+	MaxFileBytes          int      `json:"max_file_bytes"`
+	MaxTotalWriteBytes    int      `json:"max_total_write_bytes"`
+	MaxCommitMessageBytes int      `json:"max_commit_message_bytes"`
+	CommitAuthorName      string   `json:"commit_author_name"`
+	CommitAuthorEmail     string   `json:"commit_author_email"`
+}
+
+type M3Publication struct {
+	Mode            string   `json:"mode"`
+	OperationSets   []string `json:"operation_sets"`
+	BranchPrefix    string   `json:"branch_prefix"`
+	MaxReplyBytes   int      `json:"max_reply_bytes"`
+	MaxPRTitleBytes int      `json:"max_pr_title_bytes"`
+	MaxPRBodyBytes  int      `json:"max_pr_body_bytes"`
+	MaxBundleBytes  int      `json:"max_bundle_bytes"`
+}
+
+type M3 struct {
+	Admission   M3Admission   `json:"admission"`
+	Authoring   M3Authoring   `json:"authoring"`
+	Publication M3Publication `json:"publication"`
+}
+
 type Config struct {
 	Version      int
 	Providers    map[string]Provider
@@ -78,6 +113,7 @@ type Config struct {
 	Tools        []string
 	ToolLimits   map[string]ToolLimit
 	ToolConfig   ToolConfig
+	M3           *M3
 	Evidence     Evidence
 }
 
@@ -96,7 +132,7 @@ func DecodeConfig(name string, data []byte) (*Config, error) {
 		return nil, err
 	}
 
-	fields, err := mappingFields(name, root, "$", "version", "providers", "models", "workspaces", "tool_profiles", "tools", "tool_limits", "tool_config", "evidence")
+	fields, err := mappingFields(name, root, "$", "version", "providers", "models", "workspaces", "tool_profiles", "tools", "tool_limits", "tool_config", "m3", "evidence")
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +181,7 @@ func DecodeConfig(name string, data []byte) (*Config, error) {
 		return nil, err
 	}
 
-	evidence, err := decodeEvidence(name, fields["evidence"])
+	m3, evidence, err := decodeM3Config(name, fields, workspaces, toolLimits)
 	if err != nil {
 		return nil, err
 	}
@@ -172,6 +208,7 @@ func DecodeConfig(name string, data []byte) (*Config, error) {
 		Tools:        tools,
 		ToolLimits:   toolLimits,
 		ToolConfig:   toolConfig,
+		M3:           m3,
 		Evidence:     evidence,
 	}, nil
 }
@@ -283,7 +320,7 @@ func decodeTrustedWorkspaces(name string, node *yaml.Node) (map[string]Workspace
 			return nil, err
 		}
 
-		if access != "read" {
+		if access != WorkspaceAccessRead && access != WorkspaceAccessWrite {
 			return nil, diagnostic(name, path+".access", fields["access"], CodeInvalidValue)
 		}
 

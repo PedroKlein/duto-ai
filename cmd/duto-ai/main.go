@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -20,6 +21,7 @@ import (
 	"github.com/PedroKlein/duto-ai/internal/config"
 	"github.com/PedroKlein/duto-ai/internal/plan"
 	"github.com/PedroKlein/duto-ai/internal/runtime"
+	"github.com/PedroKlein/duto-ai/internal/trust"
 )
 
 const defaultConfigPath = "duto.yaml"
@@ -153,8 +155,9 @@ type admissionPayload func(*plan.Plan, outputFormat) ([]byte, error)
 
 func newOperationCommand(name string, payload admissionPayload) *cobra.Command {
 	var (
-		configPath  string
-		formatValue string
+		configPath          string
+		formatValue         string
+		controlEvidencePath string
 	)
 
 	command := &cobra.Command{
@@ -167,7 +170,7 @@ func newOperationCommand(name string, payload admissionPayload) *cobra.Command {
 				return usageError(err)
 			}
 
-			_, compiled, err := admit(configPath, args[0], command.InOrStdin())
+			_, compiled, err := admit(configPath, args[0], controlEvidencePath, command.InOrStdin())
 			if err != nil {
 				return admissionError(err)
 			}
@@ -180,17 +183,18 @@ func newOperationCommand(name string, payload admissionPayload) *cobra.Command {
 			return writePayload(command.OutOrStdout(), output)
 		},
 	}
-	addOperationFlags(command, &configPath, &formatValue)
+	addOperationFlags(command, &configPath, &formatValue, &controlEvidencePath)
 
 	return command
 }
 
 func newRunCommand(dependencies commandDependencies) *cobra.Command {
 	var (
-		configPath        string
-		formatValue       string
-		inputsPath        string
-		evidenceDirectory string
+		configPath          string
+		formatValue         string
+		inputsPath          string
+		evidenceDirectory   string
+		controlEvidencePath string
 	)
 
 	command := &cobra.Command{
@@ -203,7 +207,7 @@ func newRunCommand(dependencies commandDependencies) *cobra.Command {
 				return usageError(err)
 			}
 
-			cfg, compiled, err := admitRun(configPath, args[0], evidenceDirectory, command.InOrStdin())
+			cfg, compiled, err := admitRun(configPath, args[0], evidenceDirectory, controlEvidencePath, command.InOrStdin())
 			if err != nil {
 				return admissionError(err)
 			}
@@ -236,7 +240,7 @@ func newRunCommand(dependencies commandDependencies) *cobra.Command {
 			return writePayload(command.OutOrStdout(), output)
 		},
 	}
-	addOperationFlags(command, &configPath, &formatValue)
+	addOperationFlags(command, &configPath, &formatValue, &controlEvidencePath)
 	command.Flags().StringVar(&inputsPath, "inputs", "", "workflow inputs JSON file")
 	command.Flags().StringVar(&evidenceDirectory, "evidence-directory", "", "trusted run-only evidence directory override")
 	command.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError(err) })
@@ -258,9 +262,10 @@ func newVersionCommand(output io.Writer) *cobra.Command {
 	}
 }
 
-func addOperationFlags(command *cobra.Command, configPath, formatValue *string) {
+func addOperationFlags(command *cobra.Command, configPath, formatValue, controlEvidencePath *string) {
 	command.Flags().StringVar(configPath, "config", defaultConfigPath, "trusted runtime configuration")
 	command.Flags().StringVar(formatValue, "format", string(formatText), "output format: text or json")
+	command.Flags().StringVar(controlEvidencePath, "control-evidence", "", "trusted control-evidence JSON file")
 	command.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError(err) })
 }
 
@@ -396,11 +401,11 @@ func normalizeJSONValue(value any) any {
 	}
 }
 
-func admit(configPath, workflowPath string, stdin io.Reader) (*config.Config, *plan.Plan, error) {
-	return admitRun(configPath, workflowPath, "", stdin)
+func admit(configPath, workflowPath, controlEvidencePath string, stdin io.Reader) (*config.Config, *plan.Plan, error) {
+	return admitRun(configPath, workflowPath, "", controlEvidencePath, stdin)
 }
 
-func admitRun(configPath, workflowPath, evidenceDirectory string, stdin io.Reader) (*config.Config, *plan.Plan, error) {
+func admitRun(configPath, workflowPath, evidenceDirectory, controlEvidencePath string, stdin io.Reader) (*config.Config, *plan.Plan, error) {
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("loading config: %w", err)
@@ -415,7 +420,12 @@ func admitRun(configPath, workflowPath, evidenceDirectory string, stdin io.Reade
 		return nil, nil, err
 	}
 
-	compiled, err := plan.Compile(cfg, workflow)
+	decision, err := trust.Load(controlEvidencePath, time.Now())
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading control-evidence: %w", err)
+	}
+
+	compiled, err := plan.CompileWithTrust(cfg, workflow, decision)
 	if err != nil {
 		return nil, nil, fmt.Errorf("compiling plan: %w", err)
 	}

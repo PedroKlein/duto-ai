@@ -14,14 +14,18 @@ import (
 )
 
 type compiledToolPolicy struct {
-	catalog  dtool.Catalog
-	profiles map[string][]string
-	ceiling  []string
-	scope    ToolScope
+	catalog       dtool.Catalog
+	profiles      map[string][]string
+	ceiling       []string
+	scope         ToolScope
+	trustedLimits map[string]ToolLimit
 }
 
 func compileWorkflowToolPolicy(cfg *config.Config, workflow *config.Workflow, limits Limits) (compiledToolPolicy, error) {
 	catalog := dtool.BuiltinCatalog()
+	if cfg.M3 != nil {
+		catalog = dtool.M3Catalog()
+	}
 
 	profiles, err := dtool.MergeProfiles(cfg.ToolProfiles, workflow.ToolProfiles)
 	if err != nil {
@@ -47,7 +51,7 @@ func compileWorkflowToolPolicy(cfg *config.Config, workflow *config.Workflow, li
 		return compiledToolPolicy{}, fmt.Errorf("trusted tool bindings: %w", err)
 	}
 
-	return compiledToolPolicy{catalog: catalog, profiles: profiles, ceiling: ceiling, scope: scope}, nil
+	return compiledToolPolicy{catalog: catalog, profiles: profiles, ceiling: ceiling, scope: scope, trustedLimits: trustedLimits}, nil
 }
 
 func validateToolBindings(cfg *config.Config, names []string) error {
@@ -83,7 +87,7 @@ func validateToolBindings(cfg *config.Config, names []string) error {
 
 func readWorkspaceExists(cfg *config.Config, name string) bool {
 	workspace, exists := cfg.Workspaces[name]
-	return exists && workspace.Access == "read" && workspace.Root != ""
+	return exists && (workspace.Access == config.WorkspaceAccessRead || workspace.Access == config.WorkspaceAccessWrite) && workspace.Root != ""
 }
 
 func compileTrustedToolLimits(catalog dtool.Catalog, source map[string]config.ToolLimit) (map[string]ToolLimit, error) {

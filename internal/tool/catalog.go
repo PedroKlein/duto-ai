@@ -10,11 +10,15 @@ var ErrInvalidCatalog = errors.New("invalid tool catalog")
 type Capability string
 
 const (
-	CapabilityWorkspaceRead Capability = "workspace.read"
-	CapabilityGitRead       Capability = "git.read"
-	CapabilityProcessExec   Capability = "process.exec"
-	CapabilityNetworkRead   Capability = "network.read"
-	CapabilityGitHubRead    Capability = "github.read"
+	CapabilityWorkspaceRead   Capability = "workspace.read"
+	CapabilityWorkspaceMutate Capability = "workspace.mutate"
+	CapabilityGitRead         Capability = "git.read"
+	CapabilityGitMutate       Capability = "git.mutate"
+	CapabilityGitPublish      Capability = "git.publish"
+	CapabilityProcessExec     Capability = "process.exec"
+	CapabilityNetworkRead     Capability = "network.read"
+	CapabilityGitHubRead      Capability = "github.read"
+	CapabilityGitHubMutate    Capability = "github.mutate"
 )
 
 type SideEffect string
@@ -22,6 +26,8 @@ type SideEffect string
 const (
 	SideEffectRead    SideEffect = "read"
 	SideEffectProcess SideEffect = "process"
+	SideEffectLocal   SideEffect = "local_mutation"
+	SideEffectStaged  SideEffect = "staged"
 )
 
 type Definition struct {
@@ -76,6 +82,31 @@ func BuiltinCatalog() Catalog {
 		{Name: "shell.run", Capabilities: []Capability{CapabilityProcessExec}, SideEffect: SideEffectProcess},
 		{Name: "web.fetch", Capabilities: []Capability{CapabilityNetworkRead}, SideEffect: SideEffectRead},
 	})
+	if err != nil {
+		panic(err)
+	}
+
+	return catalog
+}
+
+func M3Catalog() Catalog {
+	definitions := make([]Definition, 0, len(BuiltinCatalog().Names())+5)
+
+	base := BuiltinCatalog()
+	for _, name := range base.Names() {
+		definition, _ := base.Definition(name)
+		definitions = append(definitions, definition)
+	}
+
+	definitions = append(definitions,
+		Definition{Name: "files.write", Capabilities: []Capability{CapabilityWorkspaceMutate}, SideEffect: SideEffectLocal},
+		Definition{Name: "git.write.commit", Capabilities: []Capability{CapabilityGitMutate}, SideEffect: SideEffectLocal},
+		Definition{Name: "safe-output.branch", Capabilities: []Capability{CapabilityGitPublish}, SideEffect: SideEffectStaged},
+		Definition{Name: "safe-output.conversation-reply", Capabilities: []Capability{CapabilityGitHubMutate}, SideEffect: SideEffectStaged},
+		Definition{Name: "safe-output.draft-pr", Capabilities: []Capability{CapabilityGitHubMutate}, SideEffect: SideEffectStaged},
+	)
+
+	catalog, err := NewCatalog(definitions)
 	if err != nil {
 		panic(err)
 	}

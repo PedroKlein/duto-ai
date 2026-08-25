@@ -14,6 +14,7 @@ import (
 	"github.com/PedroKlein/duto-ai/internal/config"
 	"github.com/PedroKlein/duto-ai/internal/prompt"
 	dtool "github.com/PedroKlein/duto-ai/internal/tool"
+	"github.com/PedroKlein/duto-ai/internal/trust"
 )
 
 const Version = 1
@@ -27,6 +28,7 @@ var (
 	ErrInvalidBinding        = errors.New("invalid binding")
 	ErrInvalidResult         = errors.New("invalid terminal result")
 	ErrInvalidAgent          = errors.New("invalid named agent")
+	ErrTrustDenied           = errors.New("trust capability denied")
 )
 
 type Projection struct {
@@ -37,18 +39,30 @@ type Projection struct {
 }
 
 type Workflow struct {
-	Name          string               `json:"name"`
-	Description   string               `json:"description,omitempty"`
-	Model         string               `json:"model"`
-	ModelConfig   ModelConfig          `json:"model_config"`
-	Inputs        []Property           `json:"inputs"`
-	Tools         ToolScope            `json:"tools"`
-	CatalogDigest string               `json:"catalog_digest"`
-	Limits        Limits               `json:"limits"`
-	Skills        []prompt.FrozenSkill `json:"skills"`
-	Agents        []Agent              `json:"agents"`
-	Steps         []Step               `json:"steps"`
-	Result        Result               `json:"result"`
+	Name                string               `json:"name"`
+	Description         string               `json:"description,omitempty"`
+	Model               string               `json:"model"`
+	ModelConfig         ModelConfig          `json:"model_config"`
+	Inputs              []Property           `json:"inputs"`
+	Tools               ToolScope            `json:"tools"`
+	CatalogDigest       string               `json:"catalog_digest"`
+	NormalizedContext   string               `json:"normalized_context,omitempty"`
+	AdmissionID         string               `json:"admission_id,omitempty"`
+	PolicySHA256        string               `json:"policy_sha256,omitempty"`
+	ControlSHA256       string               `json:"control_sha256,omitempty"`
+	Transport           string               `json:"transport,omitempty"`
+	CapabilityDecisions []CapabilityDecision `json:"capability_decisions,omitempty"`
+	Limits              Limits               `json:"limits"`
+	Skills              []prompt.FrozenSkill `json:"skills"`
+	Agents              []Agent              `json:"agents"`
+	Steps               []Step               `json:"steps"`
+	Result              Result               `json:"result"`
+}
+
+type CapabilityDecision struct {
+	Capability  string `json:"capability"`
+	Eligibility string `json:"eligibility"`
+	Admitted    bool   `json:"admitted"`
 }
 
 type ModelConfig struct {
@@ -205,7 +219,15 @@ type Plan struct {
 	evidenceDirectory string
 }
 
-func Compile(cfg *config.Config, workflow *config.Workflow) (*Plan, error) { //nolint:gocyclo // Admission follows the fixed contract order before construction.
+func Compile(cfg *config.Config, workflow *config.Workflow) (*Plan, error) {
+	return compile(cfg, workflow, trust.Decision{})
+}
+
+func CompileWithTrust(cfg *config.Config, workflow *config.Workflow, decision trust.Decision) (*Plan, error) {
+	return compile(cfg, workflow, decision)
+}
+
+func compile(cfg *config.Config, workflow *config.Workflow, decision trust.Decision) (*Plan, error) { //nolint:gocyclo // Admission follows the fixed contract order before construction.
 	if cfg == nil {
 		return nil, ErrNilConfig
 	}
@@ -247,6 +269,10 @@ func Compile(cfg *config.Config, workflow *config.Workflow) (*Plan, error) { //n
 		return nil, err
 	}
 
+	if workspaceErr := validateWorkspaceRequests(cfg, workflow); workspaceErr != nil {
+		return nil, workspaceErr
+	}
+
 	agents, err := compileAgents(workflow, inputs, limits, workspaceRoots, frozenSkills, toolPolicy)
 	if err != nil {
 		return nil, err
@@ -270,22 +296,33 @@ func Compile(cfg *config.Config, workflow *config.Workflow) (*Plan, error) { //n
 		return nil, err
 	}
 
+	trustProjection, err := compileTrustProjection(cfg, toolPolicy, agents, steps, decision)
+	if err != nil {
+		return nil, err
+	}
+
 	projection := Projection{
 		Version: Version,
 		Models:  models,
 		Workflow: Workflow{
-			Name:          workflow.Name,
-			Description:   workflow.Description,
-			Model:         workflow.Model,
-			ModelConfig:   compileModelConfig(workflow.ModelConfig, ModelConfig{}),
-			Inputs:        inputs,
-			Tools:         toolPolicy.scope,
-			CatalogDigest: catalogDigest(toolPolicy.catalog),
-			Limits:        limits,
-			Skills:        frozenSkills,
-			Agents:        agents,
-			Steps:         steps,
-			Result:        result,
+			Name:                workflow.Name,
+			Description:         workflow.Description,
+			Model:               workflow.Model,
+			ModelConfig:         compileModelConfig(workflow.ModelConfig, ModelConfig{}),
+			Inputs:              inputs,
+			Tools:               toolPolicy.scope,
+			CatalogDigest:       catalogDigest(toolPolicy.catalog),
+			NormalizedContext:   trustProjection.normalizedContext,
+			AdmissionID:         trustProjection.admissionID,
+			PolicySHA256:        trustProjection.policySHA256,
+			ControlSHA256:       trustProjection.controlSHA256,
+			Transport:           trustProjection.transport,
+			CapabilityDecisions: trustProjection.decisions,
+			Limits:              limits,
+			Skills:              frozenSkills,
+			Agents:              agents,
+			Steps:               steps,
+			Result:              result,
 		},
 	}
 
@@ -308,7 +345,7 @@ func Compile(cfg *config.Config, workflow *config.Workflow) (*Plan, error) { //n
 func compilePromptResources(cfg *config.Config, workflow *config.Workflow) (map[string]string, []prompt.FrozenSkill, error) {
 	workspaceRoots := make(map[string]string, len(cfg.Workspaces))
 	for name, workspace := range cfg.Workspaces {
-		if workspace.Access == "read" {
+		if workspace.Access == config.WorkspaceAccessRead || workspace.Access == config.WorkspaceAccessWrite {
 			workspaceRoots[name] = workspace.Root
 		}
 	}
@@ -500,7 +537,7 @@ func compileWorkspaces(source []config.WorkspaceRef, roots map[string]string) ([
 
 	seen := make(map[string]struct{}, len(source))
 	for _, workspace := range source {
-		if workspace.Access != "read" || roots[workspace.Name] == "" {
+		if (workspace.Access != config.WorkspaceAccessRead && workspace.Access != config.WorkspaceAccessWrite) || roots[workspace.Name] == "" {
 			return nil, ErrUnsupportedCapability
 		}
 
