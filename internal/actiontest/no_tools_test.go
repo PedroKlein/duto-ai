@@ -21,7 +21,32 @@ func TestAction_NoToolsTracer(t *testing.T) {
 	traceFile := filepath.Join(t.TempDir(), "fake-duto-args.txt")
 	fakeBinary := filepath.Join(t.TempDir(), "duto-ai-fake")
 
-	fakeBinaryContent := "#!/usr/bin/env bash\nset -euo pipefail\nprintf '%s\\n' \"$*\" > \"${DUTO_FAKE_TRACE_FILE}\"\nprintf '{\"outcome\":\"completed\",\"report\":\"NO_TOOLS_CANARY\"}\\n'\n"
+	fakeBinaryContent := `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" > "${DUTO_FAKE_TRACE_FILE}"
+evidence_dir=""
+while (($#)); do
+  case "$1" in
+    --evidence-directory)
+      evidence_dir="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+if [[ -z "$evidence_dir" ]]; then
+  echo "missing evidence directory argument" >&2
+  exit 90
+fi
+if [[ -e "$evidence_dir" || -L "$evidence_dir" ]]; then
+  echo "runtime evidence target must be fresh" >&2
+  exit 91
+fi
+mkdir "$evidence_dir"
+printf '{"outcome":"completed","report":"NO_TOOLS_CANARY"}\n'
+`
 	if err := os.WriteFile(fakeBinary, []byte(fakeBinaryContent), 0o755); err != nil {
 		t.Fatalf("no-tools tracer setup failure: write fake duto binary: %v", err)
 	}
@@ -81,6 +106,65 @@ func TestAction_NoToolsTracer(t *testing.T) {
 		if !strings.Contains(traceLine, fragment) {
 			t.Fatalf("missing no-tools Action behavior: expected fake binary args to include %q\nargs: %s", fragment, traceLine)
 		}
+	}
+}
+
+func TestAction_RunRejectsExistingEvidenceTarget(t *testing.T) {
+	root := repoRoot(t)
+	runScript := filepath.Join(root, "action", "run.sh")
+	runStep := actionStepsByID(loadActionMetadata(t).Runs.Steps)["run"]
+
+	for _, targetType := range []string{"directory", "file", "symlink"} {
+		t.Run(targetType, func(t *testing.T) {
+			base := t.TempDir()
+			target := filepath.Join(base, "evidence")
+
+			switch targetType {
+			case "directory":
+				if err := os.Mkdir(target, 0o700); err != nil {
+					t.Fatalf("create evidence directory: %v", err)
+				}
+			case "file":
+				if err := os.WriteFile(target, nil, 0o600); err != nil {
+					t.Fatalf("create evidence file: %v", err)
+				}
+			case "symlink":
+				if err := os.Symlink(t.TempDir(), target); err != nil {
+					t.Fatalf("create evidence symlink: %v", err)
+				}
+			}
+
+			started := filepath.Join(t.TempDir(), "started")
+			fakeBinary := filepath.Join(t.TempDir(), "duto-ai-fake")
+			fakeBinaryContent := "#!/usr/bin/env bash\nset -euo pipefail\n: > \"${DUTO_FAKE_STARTED}\"\nprintf '{\"outcome\":\"completed\"}\\n'\n"
+
+			if err := os.WriteFile(fakeBinary, []byte(fakeBinaryContent), 0o755); err != nil {
+				t.Fatalf("write fake duto binary: %v", err)
+			}
+
+			cmd := exec.Command("bash", runScript, fakeBinary)
+			cmd.Dir = root
+
+			cmd.Env = append(
+				os.Environ(),
+				"GITHUB_WORKSPACE="+t.TempDir(),
+				"RUNNER_TEMP="+t.TempDir(),
+				actionStepInputEnv(t, runStep, "INPUT_WORKFLOW", "workflow", "workflow.yaml"),
+				actionStepInputEnv(t, runStep, "INPUT_CONFIG", "config", "config.yaml"),
+				"DUTO_ACTION_INPUTS_FILE="+filepath.Join(t.TempDir(), "inputs.json"),
+				"DUTO_ACTION_RUNTIME_EVIDENCE_DIR="+target,
+				"DUTO_FAKE_STARTED="+started,
+			)
+
+			result := runCommand(t, cmd, nil)
+			if result.exitCode == 0 || !strings.Contains(result.stderr, "runtime evidence directory must be fresh") {
+				t.Fatalf("existing %s evidence target must fail closed before runtime\nexit=%d\nstderr:\n%s", targetType, result.exitCode, result.stderr)
+			}
+
+			if _, err := os.Stat(started); !os.IsNotExist(err) {
+				t.Fatalf("existing %s evidence target started runtime", targetType)
+			}
+		})
 	}
 }
 

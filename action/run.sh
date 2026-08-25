@@ -38,7 +38,9 @@ else
 fi
 
 runtime_evidence_dir="${DUTO_ACTION_RUNTIME_EVIDENCE_DIR:-${DUTO_ACTION_EVIDENCE_DIR:-${RUNNER_TEMP:?RUNNER_TEMP is required}/duto-evidence}}"
-mkdir -p "${runtime_evidence_dir}"
+if [[ -e "$runtime_evidence_dir" || -L "$runtime_evidence_dir" ]]; then
+  fail "runtime evidence directory must be fresh"
+fi
 
 result_file="${DUTO_ACTION_RESULT_FILE:-}"
 if [[ -n "$result_file" ]]; then
