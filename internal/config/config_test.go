@@ -24,10 +24,17 @@ models:
 `
 
 func TestDecodeConfig_ExpandsProviderScalarsAfterStructure(t *testing.T) {
+	t.Setenv("DUTO_TEST_PROVIDER_TYPE", "custom-provider")
 	t.Setenv("DUTO_TEST_ENDPOINT", "https://example.invalid")
 	t.Setenv("DUTO_TEST_CREDENTIAL", "test-credential")
+	t.Setenv("DUTO_TEST_MODEL_TARGET", "example-small-model")
 
-	configValue, err := config.DecodeConfig("duto.yaml", []byte(minimalConfig))
+	data := strings.NewReplacer(
+		"type: custom-provider", "type: ${DUTO_TEST_PROVIDER_TYPE}",
+		"target: example-small-model", "target: ${DUTO_TEST_MODEL_TARGET}",
+	).Replace(minimalConfig)
+
+	configValue, err := config.DecodeConfig("duto.yaml", []byte(data))
 	if err != nil {
 		t.Fatalf("DecodeConfig() error = %v", err)
 	}
@@ -39,6 +46,15 @@ func TestDecodeConfig_ExpandsProviderScalarsAfterStructure(t *testing.T) {
 
 	if model := configValue.Models["light"]; model.Provider != "default" || model.Target != "example-small-model" {
 		t.Fatalf("DecodeConfig() model = %#v", model)
+	}
+}
+
+func TestDecodeConfig_RejectsEmptyExpandedProviderBinding(t *testing.T) {
+	t.Setenv("DUTO_TEST_PROVIDER_TYPE", "")
+
+	data := strings.Replace(minimalConfig, "type: custom-provider", "type: ${DUTO_TEST_PROVIDER_TYPE}", 1)
+	if _, err := config.DecodeConfig("duto.yaml", []byte(data)); err == nil {
+		t.Fatal("DecodeConfig() error = nil, want empty expanded provider type rejected")
 	}
 }
 

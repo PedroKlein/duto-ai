@@ -186,11 +186,9 @@ func DecodeConfig(name string, data []byte) (*Config, error) {
 		return nil, err
 	}
 
-	if err := validateConfigReferences(name, providers, models, fields); err != nil {
+	if err := prepareProviderBindings(name, providers, models, fields); err != nil {
 		return nil, err
 	}
-
-	expandProviderConfig(providers)
 
 	for workspaceName, workspace := range workspaces {
 		workspace.Root = os.Expand(workspace.Root, os.Getenv)
@@ -426,7 +424,7 @@ func decodeModels(name string, node *yaml.Node) (map[string]Model, error) {
 	return models, nil
 }
 
-func validateConfigReferences(name string, providers map[string]Provider, models map[string]Model, rootFields map[string]*yaml.Node) error {
+func prepareProviderBindings(name string, providers map[string]Provider, models map[string]Model, rootFields map[string]*yaml.Node) error {
 	providerNodes := rootFields["providers"]
 	for i := 0; i < len(providerNodes.Content); i += 2 {
 		key := providerNodes.Content[i]
@@ -448,17 +446,33 @@ func validateConfigReferences(name string, providers map[string]Provider, models
 		}
 	}
 
-	return nil
+	return expandProviderBindings(name, providers, models, rootFields)
 }
 
-func expandProviderConfig(providers map[string]Provider) {
+func expandProviderBindings(name string, providers map[string]Provider, models map[string]Model, rootFields map[string]*yaml.Node) error {
 	for providerName, provider := range providers {
+		provider.Type = os.Expand(provider.Type, os.Getenv)
+		if provider.Type == "" {
+			return diagnostic(name, "$.providers."+providerName+".type", rootFields["providers"], CodeInvalidValue)
+		}
+
 		for key, value := range provider.Config {
 			provider.Config[key] = os.Expand(value, os.Getenv)
 		}
 
 		providers[providerName] = provider
 	}
+
+	for modelName, model := range models {
+		model.Target = os.Expand(model.Target, os.Getenv)
+		if model.Target == "" {
+			return diagnostic(name, "$.models."+modelName+".target", rootFields["models"], CodeInvalidValue)
+		}
+
+		models[modelName] = model
+	}
+
+	return nil
 }
 
 func decodeDocument(name string, data []byte) (*yaml.Node, error) {
