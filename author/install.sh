@@ -8,6 +8,11 @@ set -euo pipefail
 : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
 : "${GITHUB_ENV:?GITHUB_ENV is required}"
 
+if [[ "${DUTO_ACTION_ALLOW_PREINSTALLED:-}" == 1 && -n "${DUTO_ACTION_BIN:-}" && -x "$DUTO_ACTION_BIN" ]]; then
+  printf 'DUTO_ACTION_BIN=%s\n' "$DUTO_ACTION_BIN" >> "$GITHUB_ENV"
+  exit 0
+fi
+
 [[ "$INPUT_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'error: invalid duto-ai version' >&2; exit 2; }
 case "$RUNNER_OS" in Linux) os=linux ;; macOS) os=darwin ;; *) echo 'error: unsupported runner OS' >&2; exit 2 ;; esac
 case "$RUNNER_ARCH" in X64) arch=amd64 ;; ARM64) arch=arm64 ;; *) echo 'error: unsupported runner architecture' >&2; exit 2 ;; esac
