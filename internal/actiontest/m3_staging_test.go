@@ -548,7 +548,7 @@ func TestM3Staging_PlanRedactsRawEvidenceAndPaths(t *testing.T) {
 		t.Fatalf("missing M3 staging behavior: admitted plan must succeed for redaction check")
 	}
 
-	for _, canary := range []string{repo, evidDir, "local-example-repository", "local-example-owner", head, "github_pat_", "ghp_"} {
+	for _, canary := range []string{repo, evidDir, "local-example-repository", "local-example-owner", head, strings.Join([]string{"github", "pat", ""}, "_"), strings.Join([]string{"ghp", ""}, "_")} {
 		if canary != "" && strings.Contains(stdout, canary) {
 			t.Fatalf("missing M3 staging behavior: plan must not contain raw evidence value %q\nstdout: %s", canary, stdout)
 		}

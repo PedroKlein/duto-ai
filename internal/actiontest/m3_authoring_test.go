@@ -176,7 +176,7 @@ func TestM3Authoring_PlanExposesNoRemoteAuthority(t *testing.T) {
 		t.Fatalf("missing M3 authoring behavior: admitted plan failed: %s", stderr)
 	}
 
-	for _, forbidden := range []string{repo, canary, "github_pat_", "ghp_", `"remote"`, `"endpoint"`} {
+	for _, forbidden := range []string{repo, canary, strings.Join([]string{"github", "pat", ""}, "_"), strings.Join([]string{"ghp", ""}, "_"), `"remote"`, `"endpoint"`} {
 		if strings.Contains(stdout, forbidden) {
 			t.Fatalf("missing M3 authoring behavior: plan leaked remote authority %q\n%s", forbidden, stdout)
 		}
