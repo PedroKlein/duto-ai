@@ -1,17 +1,17 @@
 # Architecture
 
-This document explains the shipped CLI-first M1 runtime. [ADR 008](adr/008-product-center-and-delivery-layers.md) defines the product boundary and later delivery layers.
+This document explains the shipped CLI-first runtime, the sealed M2 adapter, and the focused M3 authoring/publisher layer. [ADR 008](adr/008-product-center-and-delivery-layers.md) defines the product boundary and delivery layers.
 
 ## Product boundary
 
 Duto validates, inspects, and executes a finite typed workflow. Workflow generation, open-ended planning, backlog management, and dynamic graph expansion belong to callers.
 
-The core is host-neutral. M1 is a local process interface. M2 is the shipped one-shot GitHub Action adapter in this repository, with contract details frozen in [ADR 009](adr/009-one-shot-github-action.md) and delivery completion recorded in [ADR 010](adr/010-m2-delivery-completion.md). Mutation and publication are M3. Durable sessions and cross-runner recovery remain future work.
+The core is host-neutral. M1 is a local process interface. M2 is the sealed one-shot read-only GitHub Action. Focused M3 adds bounded local authoring and staged publication through separate Actions, with its contract frozen in [ADR 011](adr/011-m3-focused-authoring-contract.md). Durable sessions and cross-runner recovery remain future work.
 
 ```text
 caller
-  -> duto-ai validate | plan | run
-     -> strict trusted-config decode
+  -> duto-ai validate | plan | run | publish
+     -> strict trusted-config and control-evidence decode
      -> strict portable-workflow decode
      -> pure effective-plan compilation
      -> validate: one validity payload
@@ -26,7 +26,7 @@ Admission completes before provider, model, tool handler, client, process, agent
 
 ## Command boundary
 
-`cmd/duto-ai` is the composition root. Cobra exposes `validate`, `plan`, `run`, and `version`.
+`cmd/duto-ai` is the composition root. Cobra exposes `validate`, `plan`, `run`, `publish`, and `version`.
 
 All three operation commands accept one workflow file or `-` for stdin, `--config FILE`, and `--format text|json`. They write one payload to stdout and diagnostics to stderr. The command maps usage, admission, execution, cancellation, and internal failures to distinct exit codes.
 
@@ -34,7 +34,7 @@ The composition root also owns the bundled provider adapter and concrete run-sco
 
 The CLI accepts workflow input values through `run --inputs FILE`, which must be a strict UTF-8 JSON object read from a regular file. `--inputs -` is rejected so stdin remains reserved for `WORKFLOW=-`. If a workflow declares root `inputs`, `--inputs` is required and enforced before provider construction.
 
-`run` also accepts `--evidence-directory DIR` as a trusted run-only override for the runtime evidence bundle path.
+`run` also accepts `--evidence-directory DIR` as a trusted run-only override for the runtime evidence bundle path. M3 operation commands accept a strict regular-file `--control-evidence` transport. `publish` verifies a staged bundle and permission profile before reading its write credential or constructing a remote adapter.
 
 ## Strict source documents
 
@@ -91,13 +91,13 @@ Each selected tool has one trusted hard limit and may have narrower workflow, ag
 
 Family behavior is deliberately narrow:
 
-- file tools read, find, or grep beneath one trusted read workspace;
-- Git tools run fixed read-only operations against trusted refs and workspace policy;
+- read-only file tools read, find, or grep beneath one trusted workspace; M3 adds atomic `files.write` beneath one admitted writable workspace;
+- read-only Git tools use fixed operations and trusted refs; M3 adds one exact-path, forward-only `git.write.commit`;
 - GitHub tools read runtime-bound repository or review data from one trusted endpoint and subject;
 - `web.fetch` uses an HTTPS domain allowlist and bounded redirects;
 - `shell.run` executes one exact trusted executable and fixed argument list with a closed environment and bounded output.
 
-The process tool is not a sandbox. Process-capable work cannot be retried automatically or overlap another graph branch. M1 has no mutation or publication tool.
+The process tool is not a sandbox. Process-capable work cannot be retried automatically or overlap another graph branch. M3 safe-output tools collect only `conversation.reply`, `git.branch.publish`, and `pull_request.create_draft` envelopes. They have no remote adapter.
 
 ## Native subagents
 
@@ -129,7 +129,7 @@ summary.md
 manifest.json
 ```
 
-`manifest.json` is written last and binds file sizes and SHA-256 digests to the plan and run. The directory cannot already exist. Evidence is one-shot diagnostic output, not a session checkpoint or replay protocol.
+`manifest.json` is written last and binds file sizes and SHA-256 digests to the plan and run. M3 version-2 bundles also bind policy and control digests, source commit, closed operation envelopes, and recovery bytes. The directory cannot already exist. Evidence is one-shot diagnostic output, not a session checkpoint or replay protocol.
 
 ## Package responsibilities
 
@@ -137,14 +137,17 @@ manifest.json
 |---|---|
 | `cmd/duto-ai` | CLI contract, exit mapping, provider and tool wiring |
 | `internal/config` | Strict trusted and portable YAML decoding |
+| `internal/trust` | Strict control-evidence transport and five-context capability eligibility |
 | `internal/plan` | Pure normalization, policy admission, graph checks, deterministic plan |
 | `internal/prompt` | Bounded prompt/template admission and restricted skills |
 | `internal/compiler` | Effective plan to native ADK agents and workflow nodes |
 | `internal/runtime` | Fresh-run execution, event folding, typed result, evidence bundle |
 | `internal/tool` | Fixed catalog, selectors, guards, and ADK toolset adapter |
-| `internal/tool/files` | Bounded workspace reads |
-| `internal/tool/git` | Bounded read-only Git operations |
-| `internal/tool/github` | Bounded GitHub reads |
+| `internal/tool/files` | Bounded workspace reads and admitted atomic writes |
+| `internal/tool/git` | Bounded Git reads and one scoped local commit |
+| `internal/safeoutput` | Closed staged-operation collection without remote authority |
+| `internal/publisher` | Bundle verification, preflight, reconciliation, and redacted receipts |
+| `internal/tool/github` | Bounded GitHub reads and the private fixed publisher adapter |
 | `internal/tool/web` | Bounded HTTPS fetch |
 | `internal/tool/shell` | Exact trusted process execution |
 | `internal/testing/mockllm` | Deterministic ADK model fake |
@@ -169,6 +172,6 @@ M2 also fixes path confinement, caller-owned checkout and permission ceiling, au
 
 M2 excludes writes, SafeOutputs application, durable state, pause/resume, cross-runner recovery, and async replies.
 
-M3 is the next unimplemented milestone. It adds admitted workspace and Git mutation, staged safe-output requests, and a fixed trusted publisher. It does not retroactively grant write authority to M1 tools.
+Focused M3 is shipped as one admitted writable workspace, atomic file writes, one local commit, closed staged requests, a fixed publisher CLI, and separate `author/` and `publish/` Actions. It does not retroactively grant write authority to M1 or the root M2 Action. Direct remote mode, broader GitHub mutations, merge/release behavior, and durable hosting remain excluded.
 
 A future durable-host milestone may add persistence, pause/resume, encrypted host state, cross-runner recovery, effect replay, and asynchronous reply correlation. None of those facilities is required or implied by the current one-shot evidence bundle.

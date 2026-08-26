@@ -79,9 +79,25 @@ func TestDocs_ActionReference(t *testing.T) {
 	}
 
 	for _, fragment := range []string{
+		"## Use focused authoring and staged publication (M3)",
+		"duto-ai publish",
+		"files.write",
+		"git.write.commit",
+		"safe-output.branch",
+		"permission-profile",
+		"Direct remote mode",
+	} {
+		if !strings.Contains(readme, fragment) {
+			t.Fatalf("missing docs M3 reference behavior: README must document %q", fragment)
+		}
+	}
+
+	for _, fragment := range []string{
 		"Fork PR or unknown trust contexts stay transitively read-only",
 		"keep the full typed result and runtime evidence runner-local",
 		"is not a sandbox",
+		"## M3 authoring and publisher trust contract",
+		"before reading `GITHUB_TOKEN`",
 	} {
 		if !strings.Contains(security, fragment) {
 			t.Fatalf("missing docs Action reference behavior: SECURITY.md must document %q", fragment)
@@ -92,7 +108,10 @@ func TestDocs_ActionReference(t *testing.T) {
 func TestDocs_MilestoneStatus(t *testing.T) {
 	t.Parallel()
 
-	const sealedADR009Digest = "f4f9383040599afe51550bd86ed82a91d8f8515d15656e2b1482a771fdf18901"
+	const (
+		sealedADR009Digest = "f4f9383040599afe51550bd86ed82a91d8f8515d15656e2b1482a771fdf18901"
+		sealedADR011Digest = "afa17f69bae20850c3fdfca8196c122997b63545b1e3d5866b2987133904b95e"
+	)
 
 	root := repoRoot(t)
 	readme := readDocFile(t, "README.md")
@@ -107,6 +126,14 @@ func TestDocs_MilestoneStatus(t *testing.T) {
 
 	if got := fmt.Sprintf("%x", sha256.Sum256(adr009)); got != sealedADR009Digest {
 		t.Errorf("sealed M2 contract changed: ADR 009 SHA-256 = %s, want %s", got, sealedADR009Digest)
+	}
+
+	adr011, err := os.ReadFile(filepath.Join(root, "docs", "adr", "011-m3-focused-authoring-contract.md"))
+	if err != nil {
+		t.Fatalf("missing M3 contract: %v", err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(adr011)); got != sealedADR011Digest {
+		t.Errorf("sealed M3 contract changed: ADR 011 SHA-256 = %s, want %s", got, sealedADR011Digest)
 	}
 
 	completionPath := filepath.Join(root, "docs", "adr", "010-m2-delivery-completion.md")
@@ -124,9 +151,10 @@ func TestDocs_MilestoneStatus(t *testing.T) {
 		fragment string
 	}{
 		{name: "README completion link", content: readme, fragment: "[ADR 010](docs/adr/010-m2-delivery-completion.md)"},
-		{name: "README next milestone", content: readme, fragment: "| M3, next |"},
-		{name: "architecture completion link", content: architecture, fragment: "[ADR 010](adr/010-m2-delivery-completion.md)"},
-		{name: "architecture next milestone", content: architecture, fragment: "M3 is the next unimplemented milestone"},
+		{name: "README M3 status", content: readme, fragment: "| M3, shipped |"},
+		{name: "README M3 contract", content: readme, fragment: "[ADR 011](docs/adr/011-m3-focused-authoring-contract.md)"},
+		{name: "architecture M3 contract", content: architecture, fragment: "[ADR 011](adr/011-m3-focused-authoring-contract.md)"},
+		{name: "architecture M3 status", content: architecture, fragment: "Focused M3 is shipped"},
 		{name: "ADR 008 status", content: adr008, fragment: "- **Status:** Accepted; M1 and M2 shipped"},
 		{name: "ADR 008 completion link", content: adr008, fragment: "[ADR 010](010-m2-delivery-completion.md)"},
 		{name: "completion status", content: completion, fragment: "- **Status:** Accepted; M2 shipped"},

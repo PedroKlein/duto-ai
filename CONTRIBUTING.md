@@ -49,7 +49,7 @@ go mod tidy -diff
 git diff --check
 ```
 
-Run live model or hosted acceptance only after deterministic checks pass and only when the change requires it.
+Run live model or hosted acceptance only after deterministic checks pass and only when the change requires it. M3 cross-repository changes must also run the focused Action and scenario suites against the actual `duto-test` checkout.
 
 ## Change rules
 
@@ -59,7 +59,8 @@ Run live model or hosted acceptance only after deterministic checks pass and onl
 - Use standard library and native ADK behavior before adding dependencies or abstractions.
 - Keep exported APIs small.
 - Do not add compatibility paths for removed pre-v1 syntax or commands.
-- Do not mix M2 Action behavior, M3 mutation/publication, durable hosting, or release work into an M1 core change without explicit scope.
+- Keep the sealed M2 Action, focused M3 authoring/publisher layer, durable hosting, and release work in separate reviewable scopes.
+- M3 denial tests must prove provider, filesystem, Git, credential, and HTTP-write boundaries remain untouched.
 
 ## Public-content rules
 

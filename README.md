@@ -2,7 +2,7 @@
 
 `duto-ai` is a CLI and runtime for bounded, typed AI workflow DAGs. It strictly decodes a trusted runtime configuration and a portable workflow, compiles an immutable effective plan, and executes that plan with [ADK Go v2](https://github.com/google/adk-go).
 
-The local CLI remains the primary interface. M2 ships an official one-shot GitHub Action adapter in this repository, with its contract frozen in [ADR 009](docs/adr/009-one-shot-github-action.md) and delivery completion recorded in [ADR 010](docs/adr/010-m2-delivery-completion.md). Workspace or Git mutation and remote publication are the next milestone, M3. Durable pause/resume, cross-runner recovery, and asynchronous reply correlation are future hosting work.
+The local CLI remains the primary interface. M2 ships the sealed one-shot read-only GitHub Action documented by [ADR 009](docs/adr/009-one-shot-github-action.md) and [ADR 010](docs/adr/010-m2-delivery-completion.md). M3 adds bounded local file and Git authoring, staged safe outputs, a fixed publisher CLI, and separate author/publisher Actions. The focused M3 contract is frozen in [ADR 011](docs/adr/011-m3-focused-authoring-contract.md). Durable pause/resume, cross-runner recovery, and asynchronous reply correlation remain future hosting work.
 
 ## Build and inspect a workflow
 
@@ -80,9 +80,10 @@ Run a workflow that declares no runtime inputs:
 ## CLI reference
 
 ```text
-duto-ai validate [--config FILE] [--format text|json] WORKFLOW|-
-duto-ai plan     [--config FILE] [--format text|json] WORKFLOW|-
-duto-ai run      [--config FILE] [--format text|json] [--inputs FILE] [--evidence-directory DIR] WORKFLOW|-
+duto-ai validate [--config FILE] [--control-evidence FILE] [--format text|json] WORKFLOW|-
+duto-ai plan     [--config FILE] [--control-evidence FILE] [--format text|json] WORKFLOW|-
+duto-ai run      [--config FILE] [--control-evidence FILE] [--format text|json] [--inputs FILE] [--evidence-directory DIR] WORKFLOW|-
+duto-ai publish  --config FILE --control-evidence FILE --bundle DIR --expected-bundle-sha256 HEX --permission-profile reply|branch-pr --receipt FILE [--format text|json]
 duto-ai version
 ```
 
@@ -109,7 +110,9 @@ Exit codes are stable:
 
 `run` accepts `--inputs FILE` for one strict UTF-8 JSON object. `--inputs -` is invalid because stdin remains reserved for `WORKFLOW=-`. When a workflow declares top-level `inputs`, `--inputs` is required and is validated before provider construction.
 
-`run` also accepts `--evidence-directory DIR` as a trusted run-only override for the runtime evidence bundle path.
+`run` also accepts `--evidence-directory DIR` as a trusted run-only override for the runtime evidence bundle path. `--control-evidence` accepts one bounded regular non-symlink JSON file; stdin is forbidden. M3 mutation is denied unless its normalized context, trusted `m3` admission, exact workspace, and selected capabilities all agree.
+
+`publish` verifies the complete staged bundle, current control evidence, policy digest, repository identity, source commit, permission profile, operation ordering, and expected manifest digest before reading `GITHUB_TOKEN` or constructing a remote adapter. Its dispositions are `applied`, `unchanged`, `rejected`, and `conflict`.
 
 ## Use the one-shot GitHub Action (M2)
 
@@ -174,6 +177,49 @@ Pin both `actions/checkout` and `PedroKlein/duto-ai` to full 40-character commit
 - **Process boundary:** `shell.run` and runner execution are not a sandbox
 - **Exclusions:** no writes, no SafeOutputs application, no durable state, no pause/resume, no cross-runner recovery, and no async replies
 
+## Use focused authoring and staged publication (M3)
+
+M3 uses separate jobs and separate composite Actions. The author job has no remote write credential. It may write beneath one admitted workspace, create one deterministic local commit, and stage either one bound conversation reply or one namespaced branch plus one draft pull request. The publisher job downloads that exact bundle and applies only the fixed staged operation set.
+
+```yaml
+jobs:
+  author:
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          persist-credentials: false
+      - id: author
+        uses: PedroKlein/duto-ai/author@01ec76d320e9d2f4a7a3f38646f3a2daebf25117
+        with:
+          workflow: .github/ai-workflows/author.yaml
+          config: duto.yaml
+          version: vMAJOR.MINOR.PATCH
+          correlation-key: request-123
+
+  publish:
+    needs: author
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          persist-credentials: false
+      - uses: PedroKlein/duto-ai/publish@01ec76d320e9d2f4a7a3f38646f3a2daebf25117
+        with:
+          config: duto.yaml
+          version: vMAJOR.MINOR.PATCH
+          artifact-id: ${{ needs.author.outputs.artifact-id }}
+          artifact-digest: ${{ needs.author.outputs.artifact-digest }}
+          bundle-sha256: ${{ needs.author.outputs.bundle-sha256 }}
+          permission-profile: branch-pr
+```
+
+Use `issues: write` with `contents: read` for the `reply` profile. Do not combine reply and branch/PR permissions in one publisher job. Direct remote mode, issue/check/general-comment upserts, label reconciliation, merge, force push, tag, release, durable sessions, and public plugin registries are not supported.
+
 ## Trusted configuration reference
 
 The trusted configuration is a strict `version: 1` YAML document. Its root fields are:
@@ -183,12 +229,13 @@ The trusted configuration is a strict `version: 1` YAML document. Its root field
 | `version` | yes | Integer `1` |
 | `providers` | yes | Map of provider alias to `{type, config}` |
 | `models` | yes | Map of model alias to `{provider, target}` |
-| `workspaces` | no | Map of symbolic name to `{root, access}`; M1 accepts `access: read` |
+| `workspaces` | no | Map of symbolic name to `{root, access}`; M1/M2 accept `read`, while admitted M3 allows exactly one `write` workspace |
 | `tool_profiles` | no | Map of profile name to a flat selector list |
 | `tools` | no | Trusted tool ceiling as a selector list; omission means an empty ceiling |
 | `tool_limits` | no | Exact tool-name map of hard limits |
 | `tool_config` | no | Closed trusted bindings for selected tool families |
-| `evidence` | no | `{directory}` for an optional one-shot evidence bundle |
+| `m3` | no | Closed admission, authoring bounds, and staged-publication policy from ADR 011 |
+| `evidence` | no | `{directory}` for an optional one-shot evidence bundle; required by M3 |
 
 A `tool_limits` entry accepts `max_calls`, `timeout`, `max_request_bytes`, and `max_result_bytes`. Every selected tool must have a positive trusted limit. Portable workflow and child limits may narrow this record but cannot widen it.
 
@@ -255,7 +302,9 @@ Omitted tools, `tools: []`, and an empty expression expose no direct tools. Inhe
 
 Selected families also require their trusted `tool_config` binding. File, Git, GitHub, network, and process handlers repeat resource and byte checks at the I/O boundary. `shell.run` takes no model-selected command: it executes the exact absolute executable and arguments from trusted configuration with a closed environment, workspace, deadline, call count, and output bounds. It is not a sandbox.
 
-M1 has no file or Git mutation, GitHub mutation or publication, arbitrary-method web request, tool plugin registry, or portable provider registry.
+Focused M3 additionally registers `files.write`, `git.write.commit`, `safe-output.conversation-reply`, `safe-output.branch`, and `safe-output.draft-pr`. These names appear only when trusted M3 policy is present. `files.write` is atomic and confined to the one writable workspace. `git.write.commit` stages only paths written during the activation and creates at most one forward commit. Safe-output tools write closed staged requests; they never open a remote adapter.
+
+M3 still has no arbitrary Git command, arbitrary-method web request, model-visible GitHub write client, tool plugin registry, portable provider registry, direct remote mode, merge, force push, tag, or ref deletion.
 
 ## Instructions, templates, and skills
 
@@ -295,7 +344,7 @@ summary.md
 manifest.json
 ```
 
-The manifest is written last and includes the plan digest plus file sizes and SHA-256 digests. The target directory must not already exist. This bundle records one execution; it is not a durable session, checkpoint, or replay store.
+The manifest is written last and includes the plan digest plus file sizes and SHA-256 digests. The target directory must not already exist. M3 writes a version-2 manifest with policy/control/source bindings, closed operation envelopes, and recovery files when needed. This bundle records one execution; it is not a durable session, checkpoint, or replay store.
 
 ## Delivery boundaries
 
@@ -303,7 +352,7 @@ The manifest is written last and includes the plan digest plus file sizes and SH
 |---|---|
 | M1, shipped | Local `validate`, `plan`, and one-shot `run`; strict v1 documents; bounded typed DAGs; read/process tools; native finite subagents; typed results and evidence |
 | M2, shipped | Official one-shot GitHub Action mapping trusted host inputs to the same CLI contract, then projecting summaries, outputs, and artifacts |
-| M3, next | Admitted workspace and Git mutation, staged safe outputs, and trusted publication |
+| M3, shipped | One admitted writable workspace, atomic file writes, one local commit, staged reply or branch/draft-PR operations, fixed publisher CLI, and separate Actions |
 | Future durable hosting | Persistent pause/resume, encrypted host state, cross-runner recovery, lifecycle reconciliation, and asynchronous replies |
 
 ## Development

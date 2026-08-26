@@ -24,7 +24,7 @@ M1 is a local one-shot process. The caller owns workflow provenance, checkout is
 
 Treat portable workflows, prompt files, skill files, repository content, fetched pages, model output, and tool output as untrusted data. Trusted configuration is a control-plane input. Do not let untrusted content choose or modify it.
 
-M1 remains the local one-shot process foundation. M2 is the official one-shot GitHub Action adapter with a frozen contract in [ADR 009](docs/adr/009-one-shot-github-action.md). M3 owns mutation and publication policy.
+M1 remains the local one-shot process foundation. M2 is the official sealed read-only GitHub Action adapter. Focused M3 mutation and staged publication are governed by [ADR 011](docs/adr/011-m3-focused-authoring-contract.md).
 
 ## M2 Action trust contract (frozen)
 
@@ -46,6 +46,24 @@ M2 installer and evidence rules are also fixed:
 
 M2 excludes writes, SafeOutputs application, durable state, pause/resume, cross-runner recovery, and async replies.
 
+## M3 authoring and publisher trust contract
+
+M3 accepts only strict control evidence that normalizes to `forked_pr`, `same_repository`, `scheduled`, `local`, or `unknown`. Fork and unknown contexts cannot receive mutation authority. Context, catalog capability, trusted explicit admission, exact tool scope, workspace access, and delegated-child authority are intersected before providers, tools, processes, credentials, or publishers are constructed.
+
+The authoring process has these hard boundaries:
+
+- exactly one trusted writable workspace;
+- atomic writes beneath admitted paths with traversal and symlink rejection;
+- one fixed local Git commit containing only paths written during the activation;
+- no write credential, Git credential helper, remote write adapter, push, merge, force, tag, release, or ref deletion;
+- closed staged operations only: one bound reply, or one namespaced branch followed by one draft pull request.
+
+The publisher is a separate process. It verifies the manifest and every listed file, control and policy digests, repository and subject identity, checkout and source commit, correlation, operation ordering, preconditions, permission profile, and expected bundle digest before reading `GITHUB_TOKEN` or constructing its adapter. It preflights all operations before writes and returns only `applied`, `unchanged`, `rejected`, or `conflict`.
+
+Use separate Action jobs. The author job uses read-only permissions. A reply publisher uses `actions: read`, `contents: read`, and `issues: write`; a branch/PR publisher uses `actions: read`, `contents: write`, and `pull-requests: write`. Never combine the two write profiles.
+
+Direct remote mode, issue/check/general-comment upserts, label reconciliation, durable state, asynchronous resume, merge, force push, tags, releases, and public plugin registries remain unsupported.
+
 ## Configuration and secrets
 
 - Keep provider credentials, tokens, endpoints, concrete model targets, workspace roots, fixed commands, and tool ceilings in trusted configuration or its environment.
@@ -62,21 +80,21 @@ Omitted or empty tool scopes grant no tools. Selected tools must fit the trusted
 
 Risk by family:
 
-- File tools can read only beneath their trusted workspace and reject traversal and symlink escape.
-- Git tools use fixed read-only operations, trusted refs, and a trusted workspace policy.
+- Read-only file tools remain beneath their trusted workspace. M3 `files.write` is atomic, bounded, and confined to admitted paths under the one writable workspace.
+- Read-only Git tools use trusted refs and workspace policy. M3 `git.write.commit` stages only paths written in the activation and creates at most one forward local commit.
 - GitHub tools are read-only in M1 and are bound to one trusted endpoint, repository, subject, and ref.
 - `web.fetch` can contact HTTPS hosts admitted by the trusted domain policy and follows only bounded redirects.
 - `shell.run` executes the exact absolute executable and argument list from trusted configuration with a closed environment, workspace, timeout, call count, and output limits.
 
 `shell.run` is not a sandbox. The configured executable still has the operating-system authority of the duto process. Use a dedicated runner account and external isolation where the threat model requires them.
 
-M1 has no file write, Git mutation, GitHub mutation, remote publication, or arbitrary-method network tool. Token presence never grants a model capability by itself.
+M1 and the root M2 Action have no file write, Git mutation, GitHub mutation, remote publication, or arbitrary-method network tool. M3 adds only the focused tools and fixed publisher described above. Token presence never grants a model capability by itself.
 
 ## Results and evidence
 
 The evidence plugin omits private thought, raw prompts, provider targets, credentials, and raw tool arguments or results. It records bounded correlation, status, output digests, and optional reported usage. Missing usage is absent rather than reported as zero.
 
-The optional evidence bundle is one-shot output, not a trusted audit log, durable checkpoint, or replay store. `manifest.json` is written last and binds the bundle files to the plan digest. A missing or invalid manifest means the bundle is incomplete.
+The optional evidence bundle is one-shot output, not a trusted audit log, durable checkpoint, or replay store. `manifest.json` is written last and binds the bundle files to the plan digest. M3 version-2 bundles additionally bind policy, control evidence, source commit, operations, and recovery files. A missing or invalid manifest means the bundle is incomplete.
 
 The typed `result.json` and CLI result payload contain workflow output values. Define narrow output schemas and avoid returning secrets or unnecessary source content.
 
