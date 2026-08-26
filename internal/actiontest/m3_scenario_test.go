@@ -31,7 +31,7 @@ func TestM3Scenario_CompilesDutoTestFocusedAuthoring(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 
-	workflowPath := filepath.Join(dutoTestDir, ".github/ai-workflows/scenarios/m3-focused-authoring.yaml")
+	workflowPath := filepath.Join(dutoTestDir, ".github/ai-workflows/m3/workflow.yaml")
 	workflowData, err := os.ReadFile(workflowPath)
 	if err != nil {
 		t.Fatalf("ReadFile(workflow) error = %v", err)
