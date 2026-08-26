@@ -96,6 +96,10 @@ func TestM3Staging_RuntimeWritesAtomicVersionTwoBundle(t *testing.T) {
 			t.Fatalf("operation missing %q", name)
 		}
 	}
+
+	if got := strings.TrimSpace(string(operation["depends_on"])); got != "[]" {
+		t.Fatalf("operation depends_on = %s, want []", got)
+	}
 }
 
 func TestM3Staging_FailedRunBundlesRecoveryWithoutOperations(t *testing.T) {

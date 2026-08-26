@@ -30,14 +30,9 @@ func verifyAuthoredBundle(repository, bundle, baseCommit, sourceCommit string) e
 	}
 	defer os.RemoveAll(temporary) //nolint:errcheck // temporary publisher repository contains no credentials
 
-	_, initErr := fixedGit(ctx, "", "init", "--bare", temporary)
-	if initErr != nil {
-		return initErr
-	}
-
-	_, fetchBaseErr := fixedGit(ctx, temporary, "fetch", "--no-tags", "--no-write-fetch-head", repository, baseCommit+":refs/duto/base")
-	if fetchBaseErr != nil {
-		return fetchBaseErr
+	_, cloneErr := fixedGit(ctx, "", "-c", "protocol.file.allow=always", "clone", "--bare", "--no-local", repository, temporary)
+	if cloneErr != nil {
+		return cloneErr
 	}
 
 	_, verifyErr := fixedGit(ctx, temporary, "bundle", "verify", bundle)
@@ -55,7 +50,7 @@ func verifyAuthoredBundle(repository, bundle, baseCommit, sourceCommit string) e
 		return ErrRejected
 	}
 
-	_, fetchSourceErr := fixedGit(ctx, temporary, "fetch", "--no-tags", "--no-write-fetch-head", bundle, sourceCommit+":refs/duto/source")
+	_, fetchSourceErr := fixedGit(ctx, temporary, "-c", "protocol.file.allow=always", "fetch", "--no-tags", "--no-write-fetch-head", bundle, "HEAD:refs/duto/source")
 	if fetchSourceErr != nil {
 		return fetchSourceErr
 	}

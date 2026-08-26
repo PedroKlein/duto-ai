@@ -312,7 +312,7 @@ func (c *Collector) envelope(runID, requestID, kind, sourceCommit string, depend
 		Version: 1, RequestID: requestID, CorrelationKey: c.policy.CorrelationKey, Kind: kind, Mode: "staged",
 		RunID: runID, PlanSHA256: c.policy.PlanSHA256, PolicySHA256: c.policy.PolicySHA256,
 		ControlSHA256: c.policy.ControlSHA256, Repository: c.policy.Repository, Origin: c.policy.Origin,
-		Base: c.policy.Base, SourceCommit: sourceCommit, DependsOn: slices.Clone(dependsOn),
+		Base: c.policy.Base, SourceCommit: sourceCommit, DependsOn: append([]string{}, dependsOn...),
 		Preconditions: slices.Clone(preconditions), Payload: slices.Clone(payload),
 	}
 }
