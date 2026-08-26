@@ -16,7 +16,7 @@ import (
 
 func TestM3Scenario_CompilesDutoTestFocusedAuthoring(t *testing.T) {
 	dutoTestDir := m3ScenarioDutoTestDir(t)
-	t.Setenv("DUTO_TEST_PROVIDER_TYPE", "ai-core")
+	t.Setenv("DUTO_TEST_PROVIDER_TYPE", "custom-provider")
 	t.Setenv("DUTO_TEST_PROVIDER_ENDPOINT", "https://provider.example.invalid")
 	t.Setenv("DUTO_TEST_PROVIDER_RESOURCE_GROUP", "example-resource-group")
 	t.Setenv("DUTO_TEST_PROVIDER_CLIENT_ID", "example-client-id")
