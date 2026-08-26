@@ -132,6 +132,7 @@ func TestDocs_MilestoneStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("missing M3 contract: %v", err)
 	}
+
 	if got := fmt.Sprintf("%x", sha256.Sum256(adr011)); got != sealedADR011Digest {
 		t.Errorf("sealed M3 contract changed: ADR 011 SHA-256 = %s, want %s", got, sealedADR011Digest)
 	}
