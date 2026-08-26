@@ -22,6 +22,7 @@ import (
 
 	"github.com/PedroKlein/duto-ai/internal/compiler"
 	"github.com/PedroKlein/duto-ai/internal/plan"
+	"github.com/PedroKlein/duto-ai/internal/safeoutput"
 )
 
 const resultErrorInput = "input"
@@ -41,6 +42,10 @@ func RunWithInputs(ctx context.Context, compiled *plan.Plan, resolve compiler.Mo
 }
 
 func RunWithInputsAndToolsets(ctx context.Context, compiled *plan.Plan, resolve compiler.ModelResolver, resolveToolset compiler.ToolsetResolver, inputs map[string]any) (*Result, error) {
+	return RunWithInputsAndToolsetsAndStaging(ctx, compiled, resolve, resolveToolset, inputs, nil)
+}
+
+func RunWithInputsAndToolsetsAndStaging(ctx context.Context, compiled *plan.Plan, resolve compiler.ModelResolver, resolveToolset compiler.ToolsetResolver, inputs map[string]any, staging *safeoutput.Collector, finalizers ...func(context.Context, bool) error) (*Result, error) {
 	started := time.Now().UTC()
 
 	runID, err := newRunID()
@@ -111,6 +116,10 @@ func RunWithInputsAndToolsets(ctx context.Context, compiled *plan.Plan, resolve 
 	runErr := consumeEvents(ctx, r, root, runID, string(encodedInputs), terminalStepID, terminalAgentName, result)
 	finishResult(result, ctx.Err(), runErr)
 
+	if err := finalizeAuthoring(ctx, result, finalizers); err != nil {
+		return nil, err
+	}
+
 	if err := writer.finish(result.Status, result.Output); err != nil {
 		result.Status = StatusIncomplete
 		result.Errors = append(result.Errors, ResultError{Kind: "evidence"})
@@ -118,7 +127,7 @@ func RunWithInputsAndToolsets(ctx context.Context, compiled *plan.Plan, resolve 
 		return result, ErrEvidence
 	}
 
-	if err := writeEvidenceBundle(compiled.EvidenceDirectory(), compiled.Digest(), result, writer); err != nil {
+	if err := writeEvidenceBundle(compiled, result, writer, staging); err != nil {
 		result.Status = StatusIncomplete
 		result.Errors = append(result.Errors, ResultError{Kind: "evidence"})
 
@@ -135,6 +144,23 @@ func RunWithInputsAndToolsets(ctx context.Context, compiled *plan.Plan, resolve 
 	default:
 		return result, ErrExecution
 	}
+}
+
+func finalizeAuthoring(ctx context.Context, result *Result, finalizers []func(context.Context, bool) error) error {
+	if len(finalizers) > 1 {
+		return ErrExecution
+	}
+
+	if len(finalizers) == 0 || finalizers[0] == nil {
+		return nil
+	}
+
+	if err := finalizers[0](ctx, result.Status == StatusSucceeded); err != nil {
+		result.Status = StatusFailed
+		result.Errors = append(result.Errors, ResultError{Kind: "authoring"})
+	}
+
+	return nil
 }
 
 func consumeEvents(ctx context.Context, r *runner.Runner, root agent.Agent, runID, inputs, terminalStepID, terminalAgentName string, result *Result) error { //nolint:gocyclo,gocognit // One fold keeps event and terminal status semantics consistent.

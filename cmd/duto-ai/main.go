@@ -21,6 +21,7 @@ import (
 	"github.com/PedroKlein/duto-ai/internal/config"
 	"github.com/PedroKlein/duto-ai/internal/plan"
 	"github.com/PedroKlein/duto-ai/internal/runtime"
+	"github.com/PedroKlein/duto-ai/internal/safeoutput"
 	"github.com/PedroKlein/duto-ai/internal/trust"
 )
 
@@ -466,10 +467,17 @@ func runAdmittedWorkflow(ctx context.Context, cfg *config.Config, compiled *plan
 		return nil, executionError(err)
 	}
 
-	result, err := runtime.RunWithInputsAndToolsets(ctx, compiled, bundledModelResolver(cfg), registry.FilteredToolset, inputs)
-	if lifecycleErr := authoring.finish(ctx, err == nil); lifecycleErr != nil {
-		err = lifecycleErr
+	var staging *safeoutput.Collector
+	if authoring != nil {
+		staging = authoring.staging
 	}
+
+	var finalize func(context.Context, bool) error
+	if authoring != nil {
+		finalize = authoring.finish
+	}
+
+	result, err := runtime.RunWithInputsAndToolsetsAndStaging(ctx, compiled, bundledModelResolver(cfg), registry.FilteredToolset, inputs, staging, finalize)
 
 	output, encodeErr := formatRunResult(result, format)
 	if encodeErr != nil {

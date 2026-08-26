@@ -49,16 +49,29 @@ type CommitResult struct {
 	Paths  []string `json:"paths"`
 }
 
+type Publication struct {
+	Commit string
+	Tree   string
+	Bundle []byte
+}
+
+type RecoveryArtifacts struct {
+	Metadata []byte
+	Patch    []byte
+}
+
 type Authoring struct {
-	mu        sync.Mutex
-	policy    AuthoringPolicy
-	writer    *files.Authoring
-	remotes   []byte
-	refs      []byte
-	config    []byte
-	submodule []byte
-	committed bool
-	commit    string
+	mu          sync.Mutex
+	policy      AuthoringPolicy
+	writer      *files.Authoring
+	remotes     []byte
+	refs        []byte
+	config      []byte
+	submodule   []byte
+	committed   bool
+	commit      string
+	recovery    RecoveryArtifacts
+	recoveryDir string
 }
 
 type repositorySnapshot struct {
@@ -218,6 +231,35 @@ func (a *Authoring) Commit(ctx context.Context, args CommitArgs) (*CommitResult,
 	return a.createCommit(ctx, paths, args.Message)
 }
 
+func (a *Authoring) Publication(ctx context.Context) (Publication, error) {
+	if a == nil {
+		return Publication{}, ErrAuthoringState
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if !a.committed || a.commit == "" {
+		return Publication{}, ErrAuthoringState
+	}
+
+	if err := a.verifyRepository(ctx, a.commit); err != nil {
+		return Publication{}, err
+	}
+
+	tree, err := a.tree(ctx, a.commit)
+	if err != nil {
+		return Publication{}, err
+	}
+
+	bundle, err := a.createBundle(ctx)
+	if err != nil {
+		return Publication{}, err
+	}
+
+	return Publication{Commit: a.commit, Tree: tree, Bundle: bundle}, nil
+}
+
 func (a *Authoring) Verify(ctx context.Context) error {
 	if a == nil {
 		return nil
@@ -261,9 +303,13 @@ func (a *Authoring) Recover(ctx context.Context, failureKind string) error {
 		return fmt.Errorf("recovery patch exceeds byte limit: %w", ErrAuthoringState)
 	}
 
-	if err := a.writeRecovery(failureKind, patch); err != nil {
+	recovery, err := a.writeRecovery(failureKind, patch)
+	if err != nil {
 		return err
 	}
+
+	a.recovery = recovery.artifacts
+	a.recoveryDir = recovery.directory
 
 	_, resetErr := gitOutput(ctx, a.policy.Root, nil, "reset", "--hard", a.policy.BaseSHA)
 	if resetErr != nil {
@@ -275,6 +321,27 @@ func (a *Authoring) Recover(ctx context.Context, failureKind string) error {
 	}
 
 	return a.verifyRepository(ctx, a.policy.BaseSHA)
+}
+
+func (a *Authoring) TakeRecoveryArtifacts() (RecoveryArtifacts, error) {
+	if a == nil {
+		return RecoveryArtifacts{}, nil
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	result := RecoveryArtifacts{Metadata: slices.Clone(a.recovery.Metadata), Patch: slices.Clone(a.recovery.Patch)}
+	if a.recoveryDir != "" {
+		if err := os.RemoveAll(a.recoveryDir); err != nil {
+			return RecoveryArtifacts{}, fmt.Errorf("removing recovery staging directory: %w", err)
+		}
+	}
+
+	a.recovery = RecoveryArtifacts{}
+	a.recoveryDir = ""
+
+	return result, nil
 }
 
 func (a *Authoring) unchangedCommit(ctx context.Context) (*CommitResult, error) {
@@ -331,6 +398,44 @@ func (a *Authoring) createCommit(ctx context.Context, paths []string, message st
 	return &CommitResult{Status: "applied", Commit: commit, Tree: tree, Paths: slices.Clone(paths)}, nil
 }
 
+func (a *Authoring) createBundle(ctx context.Context) ([]byte, error) {
+	parent := filepath.Dir(a.policy.EvidenceDirectory)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return nil, fmt.Errorf("creating bundle directory: %w", err)
+	}
+
+	temporary, err := os.CreateTemp(parent, ".duto-authored-*.bundle")
+	if err != nil {
+		return nil, fmt.Errorf("creating authored bundle file: %w", err)
+	}
+
+	name := temporary.Name()
+	if closeErr := temporary.Close(); closeErr != nil {
+		_ = os.Remove(name)
+		return nil, fmt.Errorf("closing authored bundle file: %w", closeErr)
+	}
+
+	if removeErr := os.Remove(name); removeErr != nil {
+		return nil, fmt.Errorf("preparing authored bundle file: %w", removeErr)
+	}
+	defer func() { _ = os.Remove(name) }()
+
+	if _, bundleErr := gitOutput(ctx, a.policy.Root, nil, "bundle", "create", name, "HEAD", "^"+a.policy.BaseSHA); bundleErr != nil {
+		return nil, fmt.Errorf("creating authored Git bundle: %w", bundleErr)
+	}
+
+	bundle, err := os.ReadFile(name) //nolint:gosec // package-created file in trusted evidence parent
+	if err != nil {
+		return nil, fmt.Errorf("reading authored Git bundle: %w", err)
+	}
+
+	if len(bundle) > a.policy.MaxRecoveryBytes {
+		return nil, fmt.Errorf("authored Git bundle exceeds byte limit: %w", ErrAuthoringState)
+	}
+
+	return bundle, nil
+}
+
 func (a *Authoring) commitEnvironment(ctx context.Context) (map[string]string, error) {
 	baseTime, err := gitOutput(ctx, a.policy.Root, nil, "show", "-s", "--format=%ct", a.policy.BaseSHA)
 	if err != nil {
@@ -371,7 +476,12 @@ func (a *Authoring) recoveryPatch(ctx context.Context, paths []string) ([]byte, 
 	return gitOutput(ctx, a.policy.Root, nil, arguments...)
 }
 
-func (a *Authoring) writeRecovery(failureKind string, patch []byte) error {
+type stagedRecovery struct {
+	artifacts RecoveryArtifacts
+	directory string
+}
+
+func (a *Authoring) writeRecovery(failureKind string, patch []byte) (stagedRecovery, error) {
 	metadata := struct {
 		Version     int            `json:"version"`
 		BaseSHA     string         `json:"base_sha"`
@@ -386,25 +496,37 @@ func (a *Authoring) writeRecovery(failureKind string, patch []byte) error {
 
 	encoded, err := json.Marshal(metadata)
 	if err != nil {
-		return fmt.Errorf("encoding recovery metadata: %w", err)
+		return stagedRecovery{}, fmt.Errorf("encoding recovery metadata: %w", err)
 	}
 
 	encoded = append(encoded, '\n')
 
-	recovery := filepath.Join(a.policy.EvidenceDirectory, "recovery")
-	if err := os.MkdirAll(recovery, 0o700); err != nil {
-		return fmt.Errorf("creating recovery directory: %w", err)
+	parent := filepath.Dir(a.policy.EvidenceDirectory)
+	if mkdirErr := os.MkdirAll(parent, 0o700); mkdirErr != nil {
+		return stagedRecovery{}, fmt.Errorf("creating recovery parent: %w", mkdirErr)
+	}
+
+	recovery, err := os.MkdirTemp(parent, ".duto-recovery-")
+	if err != nil {
+		return stagedRecovery{}, fmt.Errorf("creating recovery directory: %w", err)
 	}
 
 	if err := atomicHostWrite(filepath.Join(recovery, "metadata.json"), encoded); err != nil {
-		return err
+		return stagedRecovery{}, err
 	}
 
 	if err := atomicHostWrite(filepath.Join(recovery, "changes.patch"), patch); err != nil {
-		return err
+		return stagedRecovery{}, err
 	}
 
-	return syncDirectory(recovery)
+	if err := syncDirectory(recovery); err != nil {
+		return stagedRecovery{}, err
+	}
+
+	return stagedRecovery{
+		artifacts: RecoveryArtifacts{Metadata: slices.Clone(encoded), Patch: slices.Clone(patch)},
+		directory: recovery,
+	}, nil
 }
 
 func (a *Authoring) verifyBeforeCommit(ctx context.Context, paths []string) error {

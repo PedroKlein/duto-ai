@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/PedroKlein/duto-ai/internal/config"
 	"github.com/PedroKlein/duto-ai/internal/trust"
@@ -17,6 +18,7 @@ type trustProjection struct {
 	policySHA256      string
 	controlSHA256     string
 	transport         string
+	operationSet      string
 	decisions         []CapabilityDecision
 }
 
@@ -41,6 +43,11 @@ func compileTrustProjection(cfg *config.Config, toolPolicy compiledToolPolicy, a
 
 	selected := selectedCapabilities(toolPolicy.scope, agents, steps)
 
+	operationSet, err := selectedOperationSet(cfg, toolPolicy.scope, agents, steps, decision)
+	if err != nil {
+		return trustProjection{}, err
+	}
+
 	policyCapabilities, contextAllowed, err := admittedPolicy(cfg, decision)
 	if err != nil {
 		return trustProjection{}, err
@@ -58,7 +65,7 @@ func compileTrustProjection(cfg *config.Config, toolPolicy compiledToolPolicy, a
 		}
 	}
 
-	result := trustProjection{decisions: projected}
+	result := trustProjection{operationSet: operationSet, decisions: projected}
 	if decision.Present {
 		result.normalizedContext = string(decision.Context)
 		result.admissionID = decision.AdmissionID
@@ -102,6 +109,81 @@ func capabilityAdmitted(cfg *config.Config, decision trust.Decision, policyCapab
 	_, explicitlyAdmitted := policyCapabilities[string(capability)]
 
 	return cfg.M3 != nil && contextAllowed && explicitlyAdmitted && decision.Context != trust.ContextForkedPR && decision.Context != trust.ContextUnknown
+}
+
+func selectedOperationSet(cfg *config.Config, workflow ToolScope, agents []Agent, steps []Step, decision trust.Decision) (string, error) {
+	all, selected := collectOperationTools(workflow, agents, steps)
+	if len(selected) == 0 {
+		return "", nil
+	}
+
+	if cfg.M3 == nil {
+		return "", fmt.Errorf("safe-output requires M3 policy: %w", ErrTrustDenied)
+	}
+
+	operationSet, err := classifyOperationSet(all, selected, decision)
+	if err != nil {
+		return "", err
+	}
+
+	if !slices.Contains(cfg.M3.Publication.OperationSets, operationSet) {
+		return "", fmt.Errorf("safe-output operation set is not admitted: %w", ErrTrustDenied)
+	}
+
+	return operationSet, nil
+}
+
+func collectOperationTools(workflow ToolScope, agents []Agent, steps []Step) (all, selected map[string]struct{}) {
+	all = make(map[string]struct{})
+	selected = make(map[string]struct{})
+	add := func(scope ToolScope) {
+		for _, name := range scope.Names {
+			all[name] = struct{}{}
+			if strings.HasPrefix(name, "safe-output.") {
+				selected[name] = struct{}{}
+			}
+		}
+	}
+	add(workflow)
+
+	for _, agent := range agents {
+		add(agent.Tools)
+	}
+
+	for _, step := range steps {
+		add(step.Tools)
+	}
+
+	return all, selected
+}
+
+func classifyOperationSet(all, selected map[string]struct{}, decision trust.Decision) (string, error) {
+	if len(selected) == 1 && containsTool(selected, "safe-output.conversation-reply") {
+		if decision.Origin.Kind != "issue" && decision.Origin.Kind != "pull_request" {
+			return "", fmt.Errorf("conversation reply requires a bound subject: %w", ErrTrustDenied)
+		}
+
+		if containsTool(all, "files.write") || containsTool(all, "git.write.commit") {
+			return "", fmt.Errorf("conversation reply cannot publish authored changes: %w", ErrUnsupportedCapability)
+		}
+
+		return "conversation-reply", nil
+	}
+
+	if len(selected) == 2 && containsTool(selected, "safe-output.branch") && containsTool(selected, "safe-output.draft-pr") {
+		if !containsTool(all, "files.write") || !containsTool(all, "git.write.commit") {
+			return "", fmt.Errorf("branch publication requires local authoring: %w", ErrUnsupportedCapability)
+		}
+
+		return "branch-pr", nil
+	}
+
+	return "", fmt.Errorf("invalid safe-output operation set: %w", ErrUnsupportedCapability)
+}
+
+func containsTool(selected map[string]struct{}, name string) bool {
+	_, exists := selected[name]
+	return exists
 }
 
 func selectedCapabilities(workflow ToolScope, agents []Agent, steps []Step) map[string]struct{} {

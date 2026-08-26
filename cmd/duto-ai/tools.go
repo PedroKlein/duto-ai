@@ -10,6 +10,7 @@ import (
 
 	"github.com/PedroKlein/duto-ai/internal/config"
 	"github.com/PedroKlein/duto-ai/internal/plan"
+	"github.com/PedroKlein/duto-ai/internal/safeoutput"
 	dtool "github.com/PedroKlein/duto-ai/internal/tool"
 	"github.com/PedroKlein/duto-ai/internal/tool/files"
 	gittool "github.com/PedroKlein/duto-ai/internal/tool/git"
@@ -21,8 +22,9 @@ import (
 var errToolBinding = errors.New("selected tool family has no valid trusted binding")
 
 type authoringRuntime struct {
-	files *files.Authoring
-	git   *gittool.Authoring
+	files   *files.Authoring
+	git     *gittool.Authoring
+	staging *safeoutput.Collector
 }
 
 func buildToolRegistry(cfg *config.Config, compiled *plan.Plan) (*dtool.Registry, error) {
@@ -40,6 +42,15 @@ func buildToolRegistryForRun(ctx context.Context, cfg *config.Config, compiled *
 		return nil, nil, err
 	}
 
+	authoring, err = prepareStaging(compiled, authoring)
+	if err != nil {
+		if authoring != nil {
+			_ = authoring.close()
+		}
+
+		return nil, nil, err
+	}
+
 	selected := selectedToolNames(compiled.Snapshot().Workflow)
 	registry := dtool.NewRegistry()
 
@@ -52,6 +63,9 @@ func buildToolRegistryForRun(ctx context.Context, cfg *config.Config, compiled *
 		}},
 		{family: "git", apply: func(registry *dtool.Registry, cfg *config.Config, names []string) error {
 			return registerGit(registry, cfg, names, authoring)
+		}},
+		{family: "safe-output", apply: func(registry *dtool.Registry, _ *config.Config, _ []string) error {
+			return safeoutput.RegisterAll(registry, authoring.staging)
 		}},
 		{family: "github", apply: registerGitHub},
 		{family: "web", apply: registerWeb},
@@ -104,8 +118,87 @@ func prepareAuthoring(ctx context.Context, compiled *plan.Plan) (*authoringRunti
 	return &authoringRuntime{files: fileAuthoring, git: gitAuthoring}, nil
 }
 
+func prepareStaging(compiled *plan.Plan, authoring *authoringRuntime) (*authoringRuntime, error) {
+	spec := compiled.Staging()
+	if spec == nil {
+		return authoring, nil
+	}
+
+	policy := safeoutput.Policy{
+		OperationSet: spec.OperationSet, PlanSHA256: compiled.Digest(), PolicySHA256: spec.PolicySHA256,
+		ControlSHA256: spec.ControlSHA256, ControlJSON: spec.ControlJSON, CorrelationKey: spec.CorrelationKey,
+		Repository: safeoutput.Repository{ID: spec.Repository.ID, Owner: spec.Repository.Owner, Name: spec.Repository.Name},
+		Origin:     safeoutput.Origin{Kind: spec.Origin.Kind, Number: spec.Origin.Number},
+		Base:       safeoutput.Base{Ref: spec.BaseRef, SHA: spec.BaseSHA}, BranchPrefix: spec.BranchPrefix,
+		MaxReplyBytes: spec.MaxReplyBytes, MaxPRTitleBytes: spec.MaxPRTitleBytes,
+		MaxPRBodyBytes: spec.MaxPRBodyBytes, MaxBundleBytes: spec.MaxBundleBytes,
+	}
+	selected := familyToolNames(selectedToolNames(compiled.Snapshot().Workflow), "safe-output")
+
+	limits, err := trustedToolLimitsFromPlan(compiled, selected)
+	if err != nil {
+		return authoring, err
+	}
+
+	policy.Limits = limits
+
+	if spec.OperationSet == safeoutput.BranchPR {
+		if authoring == nil || authoring.git == nil {
+			return authoring, errToolBinding
+		}
+
+		policy.Source = func(ctx context.Context) (safeoutput.Source, error) {
+			publication, publicationErr := authoring.git.Publication(ctx)
+			if publicationErr != nil {
+				return safeoutput.Source{}, fmt.Errorf("reading Git publication source: %w", publicationErr)
+			}
+
+			return safeoutput.Source{Commit: publication.Commit, Tree: publication.Tree, Bundle: publication.Bundle}, nil
+		}
+	}
+
+	collector, err := safeoutput.New(policy)
+	if err != nil {
+		return authoring, fmt.Errorf("constructing staged operation collector: %w", err)
+	}
+
+	if authoring == nil {
+		authoring = &authoringRuntime{}
+	}
+
+	authoring.staging = collector
+
+	return authoring, nil
+}
+
+func trustedToolLimitsFromPlan(compiled *plan.Plan, names []string) (map[string]dtool.ToolLimit, error) {
+	limits := make(map[string]dtool.ToolLimit, len(names))
+	workflow := compiled.Snapshot().Workflow
+
+	byName := make(map[string]plan.ToolLimit, len(workflow.Tools.Limits))
+	for _, limit := range workflow.Tools.Limits {
+		byName[limit.Name] = limit
+	}
+
+	for _, name := range names {
+		limit, exists := byName[name]
+		if !exists {
+			return nil, errToolBinding
+		}
+
+		timeout, err := time.ParseDuration(limit.Timeout)
+		if err != nil {
+			return nil, errToolBinding
+		}
+
+		limits[name] = dtool.ToolLimit{MaxCalls: limit.MaxCalls, Timeout: timeout, MaxRequestBytes: limit.MaxRequestBytes, MaxResultBytes: limit.MaxResultBytes}
+	}
+
+	return limits, nil
+}
+
 func (a *authoringRuntime) finish(ctx context.Context, succeeded bool) error {
-	if a == nil {
+	if a == nil || a.git == nil {
 		return nil
 	}
 	defer a.close() //nolint:errcheck // the lifecycle result reports the meaningful verification or recovery error
@@ -125,6 +218,17 @@ func (a *authoringRuntime) finish(ctx context.Context, succeeded bool) error {
 		return fmt.Errorf("recovering authored repository: %w", err)
 	}
 
+	if a.staging != nil {
+		recovery, err := a.git.TakeRecoveryArtifacts()
+		if err != nil {
+			return fmt.Errorf("reading recovery artifacts: %w", err)
+		}
+
+		if err := a.staging.SetRecovery(recovery.Metadata, recovery.Patch); err != nil {
+			return fmt.Errorf("binding recovery artifacts: %w", err)
+		}
+	}
+
 	if succeeded {
 		return fmt.Errorf("verifying authored repository: %w", verifyErr)
 	}
@@ -133,7 +237,7 @@ func (a *authoringRuntime) finish(ctx context.Context, succeeded bool) error {
 }
 
 func (a *authoringRuntime) close() error {
-	if a == nil {
+	if a == nil || a.files == nil {
 		return nil
 	}
 

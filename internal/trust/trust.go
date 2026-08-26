@@ -71,14 +71,29 @@ const (
 	EligibilityDenied   Eligibility = "denied"
 )
 
+type Repository struct {
+	ID    string
+	Owner string
+	Name  string
+}
+
+type Origin struct {
+	Kind   string
+	Number int
+}
+
 type Decision struct {
-	Context       Context
-	AdmissionID   string
-	ControlSHA256 string
-	Transport     string
-	CheckoutRef   string
-	CheckoutSHA   string
-	Present       bool
+	Context        Context
+	AdmissionID    string
+	CorrelationKey string
+	ControlSHA256  string
+	ControlJSON    []byte
+	Transport      string
+	Repository     Repository
+	Origin         Origin
+	CheckoutRef    string
+	CheckoutSHA    string
+	Present        bool
 }
 
 type controlEvidence struct {
@@ -232,14 +247,23 @@ func Decode(data []byte, now time.Time) (Decision, error) {
 	sum := sha256.Sum256(data)
 
 	decision := Decision{
-		Context:       ContextUnknown,
-		AdmissionID:   evidence.Admission.ID,
-		ControlSHA256: hex.EncodeToString(sum[:]),
-		Transport:     transportStaged,
-		CheckoutRef:   evidence.Checkout.Ref,
-		CheckoutSHA:   evidence.Checkout.SHA,
-		Present:       true,
+		Context:        ContextUnknown,
+		AdmissionID:    evidence.Admission.ID,
+		CorrelationKey: evidence.Admission.CorrelationKey,
+		ControlSHA256:  hex.EncodeToString(sum[:]),
+		ControlJSON:    bytes.Clone(data),
+		Transport:      transportStaged,
+		Repository:     Repository{ID: evidence.Repository.ID, Owner: evidence.Repository.Owner, Name: evidence.Repository.Name},
+		CheckoutRef:    evidence.Checkout.Ref,
+		CheckoutSHA:    evidence.Checkout.SHA,
+		Present:        true,
 	}
+	if evidence.Event != nil {
+		decision.Origin = Origin{Kind: evidence.Event.Subject.Kind, Number: evidence.Event.Subject.Number}
+	} else {
+		decision.Origin = Origin{Kind: subjectNone}
+	}
+
 	if !validCommon(evidence, now.UTC()) {
 		return decision, nil
 	}

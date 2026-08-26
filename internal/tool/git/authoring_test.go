@@ -67,6 +67,22 @@ func TestM3Authoring_CommitStagesOnlyWrittenPathsAndPreservesRepositoryAuthority
 		t.Fatalf("Verify() error = %v", verifyErr)
 	}
 
+	publication, err := authoring.Publication(t.Context())
+	if err != nil {
+		t.Fatalf("Publication() error = %v", err)
+	}
+
+	if publication.Commit != result.Commit || publication.Tree != result.Tree || len(publication.Bundle) == 0 {
+		t.Fatalf("Publication() = %#v", publication)
+	}
+
+	bundlePath := filepath.Join(t.TempDir(), "authored.bundle")
+	if writeErr := os.WriteFile(bundlePath, publication.Bundle, 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	gitAuthoringCommand(t, repo, "bundle", "verify", bundlePath)
+
 	gitAuthoringCommand(t, repo, "reset", "--hard", base)
 
 	second, secondWriter := newBoundAuthoring(t, repo, base, t.TempDir())
@@ -136,18 +152,13 @@ func TestM3Authoring_RecoveryArtifactsPrecedeCleanup(t *testing.T) {
 		t.Fatalf("Recover() error = %v", err)
 	}
 
-	metadataPath := filepath.Join(evidence, "recovery", "metadata.json")
-	patchPath := filepath.Join(evidence, "recovery", "changes.patch")
-
-	metadata, err := os.ReadFile(metadataPath)
+	recovery, err := authoring.TakeRecoveryArtifacts()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	patch, err := os.ReadFile(patchPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	metadata := recovery.Metadata
+	patch := recovery.Patch
 
 	var decoded struct {
 		Ordering []string `json:"ordering"`
@@ -208,9 +219,9 @@ func TestM3Authoring_RecoveryAfterCommitRestoresBase(t *testing.T) {
 		t.Fatalf("HEAD = %s, want %s", head, base)
 	}
 
-	patch, err := os.ReadFile(filepath.Join(evidence, "recovery", "changes.patch"))
-	if err != nil || !strings.Contains(string(patch), "docs/report.md") {
-		t.Fatalf("recovery patch = %q, %v", patch, err)
+	recovery, err := authoring.TakeRecoveryArtifacts()
+	if err != nil || !strings.Contains(string(recovery.Patch), "docs/report.md") {
+		t.Fatalf("recovery patch = %q, %v", recovery.Patch, err)
 	}
 }
 

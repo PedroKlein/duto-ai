@@ -51,6 +51,7 @@ type Workflow struct {
 	PolicySHA256        string               `json:"policy_sha256,omitempty"`
 	ControlSHA256       string               `json:"control_sha256,omitempty"`
 	Transport           string               `json:"transport,omitempty"`
+	OperationSet        string               `json:"operation_set,omitempty"`
 	CapabilityDecisions []CapabilityDecision `json:"capability_decisions,omitempty"`
 	Limits              Limits               `json:"limits"`
 	Skills              []prompt.FrozenSkill `json:"skills"`
@@ -213,6 +214,34 @@ type Result struct {
 	Schema   Schema        `json:"schema"`
 }
 
+type StagingRepository struct {
+	ID    string
+	Owner string
+	Name  string
+}
+
+type StagingOrigin struct {
+	Kind   string
+	Number int
+}
+
+type Staging struct {
+	OperationSet    string
+	PolicySHA256    string
+	ControlSHA256   string
+	ControlJSON     []byte
+	CorrelationKey  string
+	Repository      StagingRepository
+	Origin          StagingOrigin
+	BaseRef         string
+	BaseSHA         string
+	BranchPrefix    string
+	MaxReplyBytes   int
+	MaxPRTitleBytes int
+	MaxPRBodyBytes  int
+	MaxBundleBytes  int
+}
+
 type Authoring struct {
 	Root                  string
 	AllowedPaths          []string
@@ -231,6 +260,7 @@ type Plan struct {
 	digest            string
 	evidenceDirectory string
 	authoring         *Authoring
+	staging           *Staging
 }
 
 func Compile(cfg *config.Config, workflow *config.Workflow) (*Plan, error) {
@@ -335,6 +365,7 @@ func compile(cfg *config.Config, workflow *config.Workflow, decision trust.Decis
 			PolicySHA256:        trustProjection.policySHA256,
 			ControlSHA256:       trustProjection.controlSHA256,
 			Transport:           trustProjection.transport,
+			OperationSet:        trustProjection.operationSet,
 			CapabilityDecisions: trustProjection.decisions,
 			Limits:              limits,
 			Skills:              frozenSkills,
@@ -357,11 +388,23 @@ func compile(cfg *config.Config, workflow *config.Workflow, decision trust.Decis
 		return nil, fmt.Errorf("encoding plan: %w", err)
 	}
 
+	var authoring *Authoring
+
+	selected := selectedCapabilities(toolPolicy.scope, agents, steps)
+	if _, writesFiles := selected[string(trust.CapabilityWorkspaceMutate)]; writesFiles {
+		authoring = compileAuthoring(cfg, decision)
+	}
+
+	if _, writesGit := selected[string(trust.CapabilityGitMutate)]; writesGit {
+		authoring = compileAuthoring(cfg, decision)
+	}
+
 	return &Plan{
 		json:              encoded,
 		digest:            projection.Digest,
 		evidenceDirectory: cfg.Evidence.Directory,
-		authoring:         compileAuthoring(cfg, decision),
+		authoring:         authoring,
+		staging:           compileStaging(cfg, decision, trustProjection),
 	}, nil
 }
 
@@ -407,6 +450,40 @@ func (p *Plan) Authoring() *Authoring {
 	value.AllowedPaths = slices.Clone(p.authoring.AllowedPaths)
 
 	return &value
+}
+
+func (p *Plan) Staging() *Staging {
+	if p == nil || p.staging == nil {
+		return nil
+	}
+
+	value := *p.staging
+	value.ControlJSON = slices.Clone(p.staging.ControlJSON)
+
+	return &value
+}
+
+func compileStaging(cfg *config.Config, decision trust.Decision, projection trustProjection) *Staging {
+	if cfg.M3 == nil {
+		return nil
+	}
+
+	operationSet := projection.operationSet
+	if operationSet == "" {
+		operationSet = "none"
+	}
+
+	return &Staging{
+		OperationSet: operationSet, PolicySHA256: projection.policySHA256,
+		ControlSHA256: decision.ControlSHA256, ControlJSON: slices.Clone(decision.ControlJSON),
+		CorrelationKey: decision.CorrelationKey,
+		Repository:     StagingRepository{ID: decision.Repository.ID, Owner: decision.Repository.Owner, Name: decision.Repository.Name},
+		Origin:         StagingOrigin{Kind: decision.Origin.Kind, Number: decision.Origin.Number},
+		BaseRef:        decision.CheckoutRef, BaseSHA: decision.CheckoutSHA,
+		BranchPrefix: cfg.M3.Publication.BranchPrefix, MaxReplyBytes: cfg.M3.Publication.MaxReplyBytes,
+		MaxPRTitleBytes: cfg.M3.Publication.MaxPRTitleBytes, MaxPRBodyBytes: cfg.M3.Publication.MaxPRBodyBytes,
+		MaxBundleBytes: cfg.M3.Publication.MaxBundleBytes,
+	}
 }
 
 func compileAuthoring(cfg *config.Config, decision trust.Decision) *Authoring {
