@@ -37,6 +37,7 @@ type actionStep struct {
 	Run             string            `yaml:"run"`
 	Uses            string            `yaml:"uses"`
 	Env             map[string]string `yaml:"env"`
+	With            map[string]string `yaml:"with"`
 	ContinueOnError bool              `yaml:"continue-on-error"`
 }
 

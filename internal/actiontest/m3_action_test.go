@@ -417,6 +417,10 @@ func TestM3Action_PublishDownloadsArtifactByID(t *testing.T) {
 			if !shaRef.MatchString(step.Uses) {
 				t.Errorf("missing M3 Action behavior: publish/action.yml download-artifact step must use full SHA, got %q", step.Uses)
 			}
+
+			if step.With["merge-multiple"] != "true" {
+				t.Errorf("missing M3 Action behavior: publish/action.yml must download bundle files directly into the verified bundle root")
+			}
 		}
 	}
 

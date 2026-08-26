@@ -60,6 +60,7 @@ runs:
       with:
         artifact-ids: ${{ inputs.artifact-id }}
         path: ${{ runner.temp }}/duto-publish-bundle
+        merge-multiple: true
 
     - name: Publish verified operation set
       id: publish
