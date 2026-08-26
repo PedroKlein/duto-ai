@@ -31,6 +31,7 @@ const (
 	commandValidate = "validate"
 	commandPlan     = "plan"
 	commandRun      = "run"
+	commandPublish  = "publish"
 	commandVersion  = "version"
 )
 
@@ -67,6 +68,7 @@ var (
 	errInputsObjectRoot       = errors.New("inputs JSON root must be an object")
 	errInputsTrailingDocument = errors.New("inputs JSON has a trailing document")
 	errInputsTrailingToken    = errors.New("inputs JSON has a trailing token")
+	errPublishFlagsRequired   = errors.New("all publisher flags are required")
 )
 
 type outputFormat string
@@ -79,10 +81,11 @@ const (
 type runWorkflow func(context.Context, *config.Config, *plan.Plan, map[string]any, outputFormat) ([]byte, error)
 
 type commandDependencies struct {
-	stdin  io.Reader
-	stdout io.Writer
-	stderr io.Writer
-	run    runWorkflow
+	stdin   io.Reader
+	stdout  io.Writer
+	stderr  io.Writer
+	run     runWorkflow
+	publish publishBundle
 }
 
 type commandError struct {
@@ -100,16 +103,17 @@ func (e *commandError) Unwrap() error {
 
 func main() {
 	dependencies := commandDependencies{
-		stdin:  os.Stdin,
-		stdout: os.Stdout,
-		stderr: os.Stderr,
-		run:    runAdmittedWorkflow,
+		stdin:   os.Stdin,
+		stdout:  os.Stdout,
+		stderr:  os.Stderr,
+		run:     runAdmittedWorkflow,
+		publish: runPublisher,
 	}
 	os.Exit(execute(context.Background(), os.Args[1:], dependencies))
 }
 
 func execute(ctx context.Context, args []string, dependencies commandDependencies) int {
-	commands := []string{commandValidate, commandPlan, commandRun, commandVersion}
+	commands := []string{commandValidate, commandPlan, commandRun, commandPublish, commandVersion}
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") && !slices.Contains(commands, args[0]) {
 		err := fmt.Errorf("%w %q for \"duto-ai\"", errUnknownCommand, args[0])
 
@@ -146,6 +150,7 @@ func newRootCommand(dependencies commandDependencies) *cobra.Command {
 		newOperationCommand(commandValidate, validatePayload),
 		newOperationCommand(commandPlan, planPayload),
 		newRunCommand(dependencies),
+		newPublishCommand(dependencies.publish),
 		newVersionCommand(dependencies.stdout),
 	)
 

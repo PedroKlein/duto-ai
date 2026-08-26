@@ -325,6 +325,21 @@ func isPlanAncestor(candidate, stepID string, steps []Step) bool {
 	return visit(stepID)
 }
 
+func M3PolicySHA256(cfg *config.Config) (string, error) {
+	if cfg == nil || cfg.M3 == nil {
+		return "", ErrNilConfig
+	}
+
+	catalog := dtool.M3Catalog()
+
+	limits, err := compileTrustedToolLimits(catalog, cfg.ToolLimits)
+	if err != nil {
+		return "", err
+	}
+
+	return m3PolicyDigest(cfg, compiledToolPolicy{catalog: catalog, trustedLimits: limits}), nil
+}
+
 func catalogDigest(catalog dtool.Catalog) string {
 	definitions := make([]ToolDefinition, 0, len(catalog.Names()))
 	for _, name := range catalog.Names() {
