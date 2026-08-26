@@ -348,8 +348,12 @@ func (p *Publisher) repositoryPath(resource string) string {
 }
 
 func (p *Publisher) gitRemoteURL() string {
-	host := p.baseURL.Scheme + "://" + p.baseURL.Host
-	return host + "/" + url.PathEscape(p.owner) + "/" + url.PathEscape(p.repository) + ".git"
+	host := p.baseURL.Host
+	if host == "api.github.com" {
+		host = "github.com"
+	}
+
+	return p.baseURL.Scheme + "://" + host + "/" + url.PathEscape(p.owner) + "/" + url.PathEscape(p.repository) + ".git"
 }
 
 func publisherGit(ctx context.Context, directory string, extra map[string]string, args ...string) error {
