@@ -1,8 +1,30 @@
 package github
 
 import (
+	"encoding/base64"
+	"strings"
 	"testing"
 )
+
+func TestPublisher_GitAuthorizationHeaderUsesBasicTokenCredential(t *testing.T) {
+	t.Parallel()
+
+	header := gitAuthorizationHeader("token")
+
+	encoded, ok := strings.CutPrefix(header, "Authorization: Basic ")
+	if !ok {
+		t.Fatalf("gitAuthorizationHeader() = %q, want Basic authorization", header)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("DecodeString() error = %v", err)
+	}
+
+	if got := string(decoded); got != "x-access-token:token" {
+		t.Fatalf("decoded authorization = %q", got)
+	}
+}
 
 func TestPublisher_GitRemoteURLUsesRepositoryHost(t *testing.T) {
 	t.Parallel()

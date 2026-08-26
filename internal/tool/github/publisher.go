@@ -3,6 +3,7 @@ package github
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -213,7 +214,7 @@ func (p *Publisher) pushBranch(ctx context.Context, operation publisher.Operatio
 	extra := map[string]string{
 		"GIT_CONFIG_COUNT":   "1",
 		"GIT_CONFIG_KEY_0":   "http.extraHeader",
-		"GIT_CONFIG_VALUE_0": "Authorization: Bearer " + p.token,
+		"GIT_CONFIG_VALUE_0": gitAuthorizationHeader(p.token),
 	}
 	remote := p.gitRemoteURL()
 
@@ -354,6 +355,12 @@ func (p *Publisher) request(ctx context.Context, method, path string, body, outp
 
 func (p *Publisher) repositoryPath(resource string) string {
 	return "/repos/" + url.PathEscape(p.owner) + "/" + url.PathEscape(p.repository) + resource
+}
+
+func gitAuthorizationHeader(token string) string {
+	credential := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+
+	return "Authorization: Basic " + credential
 }
 
 func (p *Publisher) gitRemoteURL() string {
