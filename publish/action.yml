@@ -1,0 +1,87 @@
+name: duto-ai publish
+description: Verify and apply one focused staged M3 operation set.
+
+inputs:
+  config:
+    description: Relative trusted configuration path.
+    required: false
+    default: duto.yaml
+  version:
+    description: Exact duto-ai release version.
+    required: true
+  artifact-id:
+    description: Exact staged artifact identifier.
+    required: true
+  artifact-digest:
+    description: Expected platform artifact digest.
+    required: true
+  bundle-sha256:
+    description: Expected manifest SHA-256.
+    required: true
+  permission-profile:
+    description: Exact publisher permission profile.
+    required: true
+
+outputs:
+  disposition:
+    description: Aggregate publisher disposition.
+    value: ${{ steps.publish.outputs.disposition }}
+  reply-url:
+    description: Applied or existing reply URL.
+    value: ${{ steps.publish.outputs.reply-url }}
+  branch:
+    description: Applied or existing branch.
+    value: ${{ steps.publish.outputs.branch }}
+  pull-request-url:
+    description: Applied or existing draft pull request URL.
+    value: ${{ steps.publish.outputs.pull-request-url }}
+  receipt-path:
+    description: Runner-local redacted receipt path.
+    value: ${{ steps.publish.outputs.receipt-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install duto-ai
+      id: install
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        DUTO_ACTION_PATH: ${{ github.action_path }}
+        DUTO_ACTION_REPOSITORY: ${{ github.action_repository }}
+        RUNNER_OS: ${{ runner.os }}
+        RUNNER_ARCH: ${{ runner.arch }}
+        RUNNER_TEMP: ${{ runner.temp }}
+      run: bash "${DUTO_ACTION_PATH}/publish/install.sh"
+
+    - name: Download exact staged artifact
+      id: download
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        artifact-ids: ${{ inputs.artifact-id }}
+        path: ${{ runner.temp }}/duto-publish-bundle
+
+    - name: Publish verified operation set
+      id: publish
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_ARTIFACT_DIGEST: ${{ inputs.artifact-digest }}
+        INPUT_BUNDLE_SHA256: ${{ inputs.bundle-sha256 }}
+        INPUT_PERMISSION_PROFILE: ${{ inputs.permission-profile }}
+        DUTO_ACTION_PATH: ${{ github.action_path }}
+        GITHUB_EVENT_NAME: ${{ github.event_name }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_REPOSITORY_ID: ${{ github.event.repository.id }}
+        GITHUB_REPOSITORY_OWNER_ID: ${{ github.event.repository.owner.id }}
+        GITHUB_ACTOR_ID: ${{ github.actor_id }}
+        GITHUB_SHA: ${{ github.sha }}
+        GITHUB_REF: ${{ github.ref }}
+        GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        GITHUB_RUN_ID: ${{ github.run_id }}
+        GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        GITHUB_EVENT_PATH: ${{ github.event_path }}
+        GITHUB_WORKSPACE: ${{ github.workspace }}
+        RUNNER_TEMP: ${{ runner.temp }}
+      run: bash "${DUTO_ACTION_PATH}/publish/run.sh"

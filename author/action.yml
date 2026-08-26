@@ -1,0 +1,94 @@
+name: duto-ai author
+description: Run bounded M3 authoring and upload the verified staged bundle.
+
+inputs:
+  workflow:
+    description: Relative workflow path.
+    required: true
+  config:
+    description: Relative trusted configuration path.
+    required: false
+    default: duto.yaml
+  version:
+    description: Exact duto-ai release version.
+    required: true
+  correlation-key:
+    description: Stable bounded correlation key.
+    required: true
+  bundle-retention-days:
+    description: Artifact retention days.
+    required: false
+    default: "1"
+
+outputs:
+  status:
+    description: Runtime status.
+    value: ${{ steps.author.outputs.status }}
+  outcome:
+    description: Runtime outcome.
+    value: ${{ steps.author.outputs.outcome }}
+  run-id:
+    description: Runtime run identifier.
+    value: ${{ steps.author.outputs.run-id }}
+  clarification-required:
+    description: Awaiting-input signal.
+    value: ${{ steps.author.outputs.clarification-required }}
+  operation-set:
+    description: Closed staged operation set.
+    value: ${{ steps.author.outputs.operation-set }}
+  bundle-sha256:
+    description: Manifest SHA-256.
+    value: ${{ steps.author.outputs.bundle-sha256 }}
+  artifact-id:
+    description: Uploaded artifact identifier.
+    value: ${{ steps.upload.outputs.artifact-id }}
+  artifact-digest:
+    description: Uploaded artifact digest.
+    value: ${{ steps.upload.outputs.artifact-digest }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install duto-ai
+      id: install
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        DUTO_ACTION_PATH: ${{ github.action_path }}
+        DUTO_ACTION_REPOSITORY: ${{ github.action_repository }}
+        RUNNER_OS: ${{ runner.os }}
+        RUNNER_ARCH: ${{ runner.arch }}
+        RUNNER_TEMP: ${{ runner.temp }}
+      run: bash "${DUTO_ACTION_PATH}/author/install.sh"
+
+    - name: Run bounded authoring
+      id: author
+      shell: bash
+      env:
+        INPUT_WORKFLOW: ${{ inputs.workflow }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_CORRELATION_KEY: ${{ inputs.correlation-key }}
+        DUTO_ACTION_PATH: ${{ github.action_path }}
+        GITHUB_EVENT_NAME: ${{ github.event_name }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        GITHUB_REPOSITORY_ID: ${{ github.event.repository.id }}
+        GITHUB_REPOSITORY_OWNER_ID: ${{ github.event.repository.owner.id }}
+        GITHUB_ACTOR_ID: ${{ github.actor_id }}
+        GITHUB_SHA: ${{ github.sha }}
+        GITHUB_REF: ${{ github.ref }}
+        GITHUB_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        GITHUB_RUN_ID: ${{ github.run_id }}
+        GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        GITHUB_EVENT_PATH: ${{ github.event_path }}
+        GITHUB_WORKSPACE: ${{ github.workspace }}
+        RUNNER_TEMP: ${{ runner.temp }}
+      run: bash "${DUTO_ACTION_PATH}/author/run.sh"
+
+    - name: Upload staged bundle
+      id: upload
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: duto-m3-${{ steps.author.outputs.run-id }}
+        path: ${{ steps.author.outputs.bundle-path }}
+        retention-days: ${{ inputs.bundle-retention-days }}
+        if-no-files-found: error
