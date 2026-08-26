@@ -47,7 +47,7 @@ runs:
       shell: bash
       env:
         INPUT_VERSION: ${{ inputs.version }}
-        DUTO_ACTION_PATH: ${{ github.action_path }}
+        DUTO_ACTION_PATH: ${{ github.action_path }}/..
         DUTO_ACTION_REPOSITORY: ${{ github.action_repository }}
         RUNNER_OS: ${{ runner.os }}
         RUNNER_ARCH: ${{ runner.arch }}
@@ -70,7 +70,7 @@ runs:
         INPUT_ARTIFACT_DIGEST: ${{ inputs.artifact-digest }}
         INPUT_BUNDLE_SHA256: ${{ inputs.bundle-sha256 }}
         INPUT_PERMISSION_PROFILE: ${{ inputs.permission-profile }}
-        DUTO_ACTION_PATH: ${{ github.action_path }}
+        DUTO_ACTION_PATH: ${{ github.action_path }}/..
         GITHUB_EVENT_NAME: ${{ github.event_name }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         GITHUB_REPOSITORY_ID: ${{ github.event.repository.id }}

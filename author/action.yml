@@ -54,7 +54,7 @@ runs:
       shell: bash
       env:
         INPUT_VERSION: ${{ inputs.version }}
-        DUTO_ACTION_PATH: ${{ github.action_path }}
+        DUTO_ACTION_PATH: ${{ github.action_path }}/..
         DUTO_ACTION_REPOSITORY: ${{ github.action_repository }}
         RUNNER_OS: ${{ runner.os }}
         RUNNER_ARCH: ${{ runner.arch }}
@@ -68,7 +68,7 @@ runs:
         INPUT_WORKFLOW: ${{ inputs.workflow }}
         INPUT_CONFIG: ${{ inputs.config }}
         INPUT_CORRELATION_KEY: ${{ inputs.correlation-key }}
-        DUTO_ACTION_PATH: ${{ github.action_path }}
+        DUTO_ACTION_PATH: ${{ github.action_path }}/..
         GITHUB_EVENT_NAME: ${{ github.event_name }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         GITHUB_REPOSITORY_ID: ${{ github.event.repository.id }}
