@@ -52,16 +52,16 @@ func TestM3Authoring_DeniedContextHasZeroSideEffects(t *testing.T) {
 	configPath := writeConfigFile(t, m3AuthoringConfig(t, repo))
 	workflowPath := writeWorkflowFile(t, m3TrustMutationWorkflow)
 	evidencePath := writeEvidenceFile(t, m3GithubEvidence("pull_request", "9999", "refs/pull/7/merge", head))
-	counters := newM3AuthoringCounters(t)
+	before := snapshotM3AuthoringRepo(t, repo)
 
 	_, stderr, code := runDutoAI(t, dutoAIBinary(t), []string{
 		"run", "--config", configPath, "--control-evidence", evidencePath, workflowPath,
-	}, counters.env())
+	}, nil)
 	if code == 0 || (!strings.Contains(stderr, "forked_pr") && !strings.Contains(stderr, "denied")) {
 		t.Fatalf("missing M3 authoring behavior: forked PR mutation must be denied before construction\ncode=%d stderr=%s", code, stderr)
 	}
 
-	counters.assertZero(t)
+	assertM3AuthoringRepoUnchanged(t, repo, before)
 }
 
 func TestM3Authoring_RepositoryAdmissionRejectsUnsafeState(t *testing.T) {
@@ -133,16 +133,16 @@ func TestM3Authoring_RepositoryAdmissionRejectsUnsafeState(t *testing.T) {
 			configPath := writeConfigFile(t, configYAML)
 			workflowPath := writeWorkflowFile(t, m3TrustMutationWorkflow)
 			evidencePath := writeEvidenceFile(t, m3AuthoringLocalEvidence(head))
-			counters := newM3AuthoringCounters(t)
+			before := snapshotM3AuthoringRepo(t, repo)
 
 			_, stderr, code := runDutoAI(t, dutoAIBinary(t), []string{
 				"run", "--config", configPath, "--control-evidence", evidencePath, workflowPath,
-			}, counters.env())
+			}, nil)
 			if code == 0 || !containsM3AuthoringTerm(stderr, test.want) {
 				t.Fatalf("missing M3 authoring behavior: %s must be rejected at repository admission\ncode=%d stderr=%s", test.name, code, stderr)
 			}
 
-			counters.assertZero(t)
+			assertM3AuthoringRepoUnchanged(t, repo, before)
 		})
 	}
 }
@@ -152,16 +152,16 @@ func TestM3Authoring_CheckoutMismatchHasZeroSideEffects(t *testing.T) {
 	configPath := writeConfigFile(t, m3AuthoringConfig(t, repo))
 	workflowPath := writeWorkflowFile(t, m3TrustMutationWorkflow)
 	evidencePath := writeEvidenceFile(t, m3AuthoringLocalEvidence("1111111111111111111111111111111111111111"))
-	counters := newM3AuthoringCounters(t)
+	before := snapshotM3AuthoringRepo(t, repo)
 
 	_, stderr, code := runDutoAI(t, dutoAIBinary(t), []string{
 		"run", "--config", configPath, "--control-evidence", evidencePath, workflowPath,
-	}, counters.env())
+	}, nil)
 	if code == 0 || !containsM3AuthoringTerm(stderr, []string{"checkout", "base", "HEAD", "revision"}) {
 		t.Fatalf("missing M3 authoring behavior: checkout mismatch must be rejected before construction\ncode=%d stderr=%s", code, stderr)
 	}
 
-	counters.assertZero(t)
+	assertM3AuthoringRepoUnchanged(t, repo, before)
 }
 
 func TestM3Authoring_PlanExposesNoRemoteAuthority(t *testing.T) {
@@ -189,55 +189,32 @@ func TestM3Authoring_PlanExposesNoRemoteAuthority(t *testing.T) {
 	}
 }
 
-type m3AuthoringCounters struct {
-	files string
-	git   string
-	creds string
-	http  string
+type m3AuthoringRepoSnapshot struct {
+	head    string
+	status  string
+	refs    string
+	remotes string
+	config  string
 }
 
-func newM3AuthoringCounters(t *testing.T) m3AuthoringCounters {
-	t.Helper()
-	dir := t.TempDir()
-
-	result := m3AuthoringCounters{
-		files: filepath.Join(dir, "files"),
-		git:   filepath.Join(dir, "git"),
-		creds: filepath.Join(dir, "credentials"),
-		http:  filepath.Join(dir, "http"),
-	}
-	for _, path := range []string{result.files, result.git, result.creds, result.http} {
-		if err := os.WriteFile(path, []byte("0\n"), 0o600); err != nil {
-			t.Fatalf("write counter: %v", err)
-		}
-	}
-
-	return result
-}
-
-func (c m3AuthoringCounters) env() map[string]string {
-	return map[string]string{
-		"DUTO_FAKE_FS_WRITE_COUNTER_FILE":     c.files,
-		"DUTO_FAKE_GIT_WRITE_COUNTER_FILE":    c.git,
-		"DUTO_FAKE_CREDENTIAL_COUNTER_FILE":   c.creds,
-		"DUTO_FAKE_HTTP_WRITE_COUNTER_FILE":   c.http,
-		"DUTO_FAKE_MUTATION_COUNTER_FILE":     c.files,
-		"DUTO_FAKE_REMOTE_WRITE_COUNTER_FILE": c.http,
-	}
-}
-
-func (c m3AuthoringCounters) assertZero(t *testing.T) {
+func snapshotM3AuthoringRepo(t *testing.T, repo string) m3AuthoringRepoSnapshot {
 	t.Helper()
 
-	for name, path := range map[string]string{"filesystem": c.files, "git": c.git, "credential": c.creds, "http": c.http} {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s counter: %v", name, err)
-		}
+	return m3AuthoringRepoSnapshot{
+		head:    runM3AuthoringGit(t, repo, "rev-parse", "HEAD"),
+		status:  runM3AuthoringGit(t, repo, "status", "--porcelain=v1", "--untracked-files=all"),
+		refs:    runM3AuthoringGit(t, repo, "for-each-ref", "--format=%(refname)%00%(objectname)"),
+		remotes: runM3AuthoringGit(t, repo, "remote", "-v"),
+		config:  runM3AuthoringGit(t, repo, "config", "--local", "--null", "--list"),
+	}
+}
 
-		if strings.TrimSpace(string(data)) != "0" {
-			t.Fatalf("missing M3 authoring behavior: %s counter = %q, want 0", name, data)
-		}
+func assertM3AuthoringRepoUnchanged(t *testing.T, repo string, before m3AuthoringRepoSnapshot) {
+	t.Helper()
+
+	after := snapshotM3AuthoringRepo(t, repo)
+	if after != before {
+		t.Fatalf("repository changed across denied authoring\nbefore: %#v\nafter: %#v", before, after)
 	}
 }
 

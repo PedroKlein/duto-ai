@@ -367,7 +367,7 @@ func TestM3Staging_SafeOutputNeverOpensWriteCredential(t *testing.T) {
 	wfPath := writeWorkflowFile(t, m3ReplyOnlyWorkflow)
 	evidencePath := writeEvidenceFile(t, m3StagingIssueEvidence(head))
 	bin := dutoAIBinary(t)
-	counters := newM3AuthoringCounters(t)
+	before := snapshotM3AuthoringRepo(t, repo)
 
 	inputsFile := filepath.Join(t.TempDir(), "inputs.json")
 	if err := os.WriteFile(inputsFile, []byte(`{"request":"Please summarize."}`), 0o600); err != nil {
@@ -376,28 +376,9 @@ func TestM3Staging_SafeOutputNeverOpensWriteCredential(t *testing.T) {
 
 	_, stderr, code := runDutoAI(t, bin, []string{
 		"run", "--config", configPath, "--control-evidence", evidencePath, "--inputs", inputsFile, wfPath,
-	}, counters.env())
+	}, nil)
 
-	// At RED safe-output tools are not yet implemented; the run exits non-zero.
-	// After GREEN it must exit 0 AND the credential/http counters must remain zero.
-	// We assert counter invariant regardless of exit code.
-	credData, err := os.ReadFile(counters.creds)
-	if err != nil {
-		t.Fatalf("read credential counter: %v", err)
-	}
-
-	httpData, err := os.ReadFile(counters.http)
-	if err != nil {
-		t.Fatalf("read http counter: %v", err)
-	}
-
-	if strings.TrimSpace(string(credData)) != "0" {
-		t.Fatalf("missing M3 staging behavior: credential counter must remain zero during safe-output run\ncredential counter: %s\nstderr: %s", credData, stderr)
-	}
-
-	if strings.TrimSpace(string(httpData)) != "0" {
-		t.Fatalf("missing M3 staging behavior: HTTP write counter must remain zero during safe-output run\nhttp counter: %s\nstderr: %s", httpData, stderr)
-	}
+	assertM3AuthoringRepoUnchanged(t, repo, before)
 
 	// At RED the run exits non-zero because safe-output tools have no implementation.
 	if code == 0 {
@@ -416,11 +397,11 @@ func TestM3Staging_ForkedPRSafeOutputDeniedBeforeCredential(t *testing.T) {
 	evidence := m3GithubEvidence("pull_request", "9999", "refs/pull/7/merge", head)
 	evidencePath := writeEvidenceFile(t, evidence)
 	bin := dutoAIBinary(t)
-	counters := newM3AuthoringCounters(t)
+	before := snapshotM3AuthoringRepo(t, repo)
 
 	_, stderr, code := runDutoAI(t, bin, []string{
 		"run", "--config", configPath, "--control-evidence", evidencePath, wfPath,
-	}, counters.env())
+	}, nil)
 
 	if code == 0 {
 		t.Fatalf("missing M3 staging behavior: forked_pr with safe-output must be denied; got exit 0")
@@ -430,12 +411,7 @@ func TestM3Staging_ForkedPRSafeOutputDeniedBeforeCredential(t *testing.T) {
 		t.Fatalf("missing M3 staging behavior: denial must name context\nstderr: %s", stderr)
 	}
 
-	credData, _ := os.ReadFile(counters.creds)
-	httpData, _ := os.ReadFile(counters.http)
-
-	if strings.TrimSpace(string(credData)) != "0" || strings.TrimSpace(string(httpData)) != "0" {
-		t.Fatalf("missing M3 staging behavior: no write credential or HTTP call before forked_pr denial\ncreds: %s http: %s", credData, httpData)
-	}
+	assertM3AuthoringRepoUnchanged(t, repo, before)
 }
 
 // ---------------------------------------------------------------------------

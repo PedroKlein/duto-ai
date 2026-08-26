@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -358,16 +359,35 @@ func buildPROnlyBundle(t *testing.T, evidenceDoc map[string]any) (string, string
 func runPublish(t *testing.T, bin string, args []string) (stdout, stderr string, exitCode int) {
 	t.Helper()
 
-	statePath := filepath.Join(t.TempDir(), "publisher-state.json")
-
-	for index, value := range args {
-		if value == "--config" && index+1 < len(args) {
-			statePath = filepath.Join(filepath.Dir(args[index+1]), "publisher-state.json")
-			break
-		}
+	statePath := publisherStatePath(args)
+	if statePath == "" {
+		statePath = filepath.Join(t.TempDir(), "publisher-state.json")
 	}
 
 	return runDutoAI(t, bin, append([]string{"publish"}, args...), map[string]string{"DUTO_TEST_PUBLISH_STATE": statePath})
+}
+
+func publisherStatePath(args []string) string {
+	for index, value := range args {
+		if value == "--config" && index+1 < len(args) {
+			return filepath.Join(filepath.Dir(args[index+1]), "publisher-state.json")
+		}
+	}
+
+	return ""
+}
+
+func assertPublisherStateAbsent(t *testing.T, args []string) {
+	t.Helper()
+
+	path := publisherStatePath(args)
+	if path == "" {
+		t.Fatal("publisher state path is unavailable")
+	}
+
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("publisher adapter state exists after pre-verification rejection: %v", err)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -422,22 +442,18 @@ func TestM3Publisher_RequiredFlagsEnforced(t *testing.T) {
 
 func TestM3Publisher_InvalidPermissionProfileRejected(t *testing.T) {
 	bin := dutoAIBinary(t)
-	counterPath := filepath.Join(t.TempDir(), "cred-counter.txt")
-	_ = os.WriteFile(counterPath, []byte("0"), 0o600)
-
-	_, _, code := runPublish(t, bin, []string{
-		"--config", "/dev/null", "--control-evidence", "/dev/null",
+	args := []string{
+		"--config", writePubConfig(t), "--control-evidence", "/dev/null",
 		"--bundle", "/tmp", "--expected-bundle-sha256", pubHex("a", 64),
-		"--permission-profile", "merge-and-release", "--receipt", "/dev/null",
-	})
+		"--permission-profile", "merge-and-release", "--receipt", filepath.Join(t.TempDir(), "receipt.json"),
+	}
+
+	_, _, code := runPublish(t, bin, args)
 	if code == 0 {
 		t.Fatalf("missing M3 publisher behavior: invalid permission-profile must be rejected; got exit 0")
 	}
 
-	data, _ := os.ReadFile(counterPath)
-	if strings.TrimSpace(string(data)) != "0" {
-		t.Fatalf("missing M3 publisher behavior: credential counter must stay 0 on invalid profile; got %s", string(data))
-	}
+	assertPublisherStateAbsent(t, args)
 }
 
 func TestM3Publisher_ControlEvidenceStdinRejected(t *testing.T) {
@@ -465,14 +481,13 @@ func TestM3Publisher_BundleSHAMismatchIsRejected(t *testing.T) {
 	cfgPath := writePubConfig(t)
 	evidencePath := writePubEvidenceFile(t, evidenceDoc)
 	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
-	counterPath := filepath.Join(t.TempDir(), "write-counter.txt")
-	_ = os.WriteFile(counterPath, []byte("0"), 0o600)
-
-	stdout, stderr, code := runPublish(t, bin, []string{
+	args := []string{
 		"--config", cfgPath, "--control-evidence", evidencePath,
 		"--bundle", bundleDir, "--expected-bundle-sha256", pubHex("0", 64),
 		"--permission-profile", "reply", "--receipt", receiptPath,
-	})
+	}
+
+	stdout, stderr, code := runPublish(t, bin, args)
 	if strings.Contains(stderr, "unknown command") {
 		t.Fatalf("missing M3 publisher behavior: 'duto-ai publish' must be a registered command\nstderr: %s", stderr)
 	}
@@ -485,10 +500,7 @@ func TestM3Publisher_BundleSHAMismatchIsRejected(t *testing.T) {
 		t.Fatalf("missing M3 publisher behavior: no receipt must be written for rejected bundle")
 	}
 
-	data, _ := os.ReadFile(counterPath)
-	if strings.TrimSpace(string(data)) != "0" {
-		t.Fatalf("missing M3 publisher behavior: write counter must stay 0 on SHA mismatch; got %s", string(data))
-	}
+	assertPublisherStateAbsent(t, args)
 
 	combined := stdout + stderr
 	if !strings.Contains(combined, "rejected") && !strings.Contains(combined, "sha256") && !strings.Contains(combined, "mismatch") {
@@ -578,22 +590,18 @@ func TestM3Publisher_RepositoryIDMismatchIsRejected(t *testing.T) {
 	cfgPath := writePubConfig(t)
 	currentEvidencePath := writePubEvidenceFile(t, currentEvidence)
 	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
-	counterPath := filepath.Join(t.TempDir(), "write-counter.txt")
-	_ = os.WriteFile(counterPath, []byte("0"), 0o600)
-
-	_, _, code := runPublish(t, bin, []string{
+	args := []string{
 		"--config", cfgPath, "--control-evidence", currentEvidencePath,
 		"--bundle", bundleDir, "--expected-bundle-sha256", bundleSHA,
 		"--permission-profile", "reply", "--receipt", receiptPath,
-	})
+	}
+
+	_, _, code := runPublish(t, bin, args)
 	if code == 0 {
 		t.Fatalf("missing M3 publisher behavior: repository ID mismatch must be rejected; got exit 0")
 	}
 
-	data, _ := os.ReadFile(counterPath)
-	if strings.TrimSpace(string(data)) != "0" {
-		t.Fatalf("missing M3 publisher behavior: write counter must stay 0 on repo ID mismatch; got %s", string(data))
-	}
+	assertPublisherStateAbsent(t, args)
 }
 
 func TestM3Publisher_CorrelationKeyMismatchIsRejected(t *testing.T) {
@@ -675,22 +683,18 @@ func TestM3Publisher_WrongPermissionProfileIsRejected(t *testing.T) {
 	cfgPath := writePubConfig(t)
 	currentEvidencePath := writePubEvidenceFile(t, evidenceDoc)
 	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
-	counterPath := filepath.Join(t.TempDir(), "write-counter.txt")
-	_ = os.WriteFile(counterPath, []byte("0"), 0o600)
-
-	_, _, code := runPublish(t, bin, []string{
+	args := []string{
 		"--config", cfgPath, "--control-evidence", currentEvidencePath,
 		"--bundle", bundleDir, "--expected-bundle-sha256", bundleSHA,
 		"--permission-profile", "branch-pr", "--receipt", receiptPath,
-	})
+	}
+
+	_, _, code := runPublish(t, bin, args)
 	if code == 0 {
 		t.Fatalf("missing M3 publisher behavior: wrong permission-profile for operation set must be rejected; got exit 0")
 	}
 
-	data, _ := os.ReadFile(counterPath)
-	if strings.TrimSpace(string(data)) != "0" {
-		t.Fatalf("missing M3 publisher behavior: write counter must stay 0 on profile mismatch; got %s", string(data))
-	}
+	assertPublisherStateAbsent(t, args)
 }
 
 func TestM3Publisher_PolicyDigestMismatchIsRejected(t *testing.T) {
@@ -971,22 +975,18 @@ func TestM3Publisher_DefaultBranchWriteIsRejected(t *testing.T) {
 	cfgPath := writePubConfig(t)
 	currentEvidencePath := writePubEvidenceFile(t, evidenceDoc)
 	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
-	counterPath := filepath.Join(t.TempDir(), "write-counter.txt")
-	_ = os.WriteFile(counterPath, []byte("0"), 0o600)
-
-	_, _, code := runPublish(t, bin, []string{
+	args := []string{
 		"--config", cfgPath, "--control-evidence", currentEvidencePath,
 		"--bundle", bundleDir, "--expected-bundle-sha256", bundleSHA,
 		"--permission-profile", "branch-pr", "--receipt", receiptPath,
-	})
+	}
+
+	_, _, code := runPublish(t, bin, args)
 	if code == 0 {
 		t.Fatalf("missing M3 publisher behavior: default branch write must be rejected; got exit 0")
 	}
 
-	data, _ := os.ReadFile(counterPath)
-	if strings.TrimSpace(string(data)) != "0" {
-		t.Fatalf("missing M3 publisher behavior: write counter must stay 0 on default branch rejection; got %s", string(data))
-	}
+	assertPublisherStateAbsent(t, args)
 }
 
 func TestM3Publisher_NonNamespacedBranchIsRejected(t *testing.T) {

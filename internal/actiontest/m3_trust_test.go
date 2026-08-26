@@ -733,19 +733,18 @@ result: {step: report}
 // tool constructor, filesystem mutation, Git mutation, or credential is opened.
 func TestM3Trust_CapabilityDecision_ForkDeniedBeforeConstruction(t *testing.T) {
 	bin := dutoAIBinary(t)
-	cfgPath := writeConfigFile(t, m3TrustMinimalConfig)
+	repo, head := newM3AuthoringRepo(t)
+	cfgPath := writeConfigFile(t, m3AuthoringConfig(t, repo))
 	wfPath := writeWorkflowFile(t, m3TrustMutationWorkflow)
 
 	// Forked PR: head repository ID differs from base.
-	evidence := m3GithubEvidence("pull_request", "9999", "refs/pull/7/merge", m3TrustCheckout)
+	evidence := m3GithubEvidence("pull_request", "9999", "refs/pull/7/merge", head)
 	evidencePath := writeEvidenceFile(t, evidence)
-
-	mutationCounterPath := filepath.Join(t.TempDir(), "mutation-counter.txt")
-	_ = os.WriteFile(mutationCounterPath, []byte("0"), 0o600)
+	before := snapshotM3AuthoringRepo(t, repo)
 
 	_, stderr, code := runDutoAI(t, bin,
 		[]string{"run", "--config", cfgPath, "--control-evidence", evidencePath, wfPath},
-		map[string]string{"DUTO_FAKE_MUTATION_COUNTER_FILE": mutationCounterPath},
+		nil,
 	)
 
 	if code == 0 {
@@ -756,15 +755,7 @@ func TestM3Trust_CapabilityDecision_ForkDeniedBeforeConstruction(t *testing.T) {
 		t.Fatalf("missing M3 trust behavior: forked_pr denial must name context or 'denied'/'read-only'\nstderr: %s", stderr)
 	}
 
-	// Counter file must not have been incremented (zero constructor calls).
-	data, err := os.ReadFile(mutationCounterPath)
-	if err != nil {
-		t.Fatalf("missing M3 trust behavior: mutation counter file not readable: %v", err)
-	}
-
-	if strings.TrimSpace(string(data)) != "0" {
-		t.Fatalf("missing M3 trust behavior: forked_pr denial must not open any mutation constructor\nmutation counter: %s", string(data))
-	}
+	assertM3AuthoringRepoUnchanged(t, repo, before)
 }
 
 // TestM3Trust_CapabilityDecision_UnknownDeniedBeforeConstruction mirrors the
