@@ -206,12 +206,8 @@ func (p *Publisher) pushBranch(ctx context.Context, operation publisher.Operatio
 	}
 	defer os.RemoveAll(temporary) //nolint:errcheck // temporary publisher repository contains no credential files
 
-	if err := publisherGit(ctx, "", nil, "init", "--bare", temporary); err != nil {
-		return err
-	}
-
-	if err := publisherGit(ctx, temporary, nil, "fetch", "--no-tags", "--no-write-fetch-head", operation.SourceBundle, operation.SourceCommit+":refs/duto/source"); err != nil {
-		return err
+	if initErr := publisherGit(ctx, "", nil, "init", "--bare", temporary); initErr != nil {
+		return initErr
 	}
 
 	extra := map[string]string{
@@ -220,6 +216,19 @@ func (p *Publisher) pushBranch(ctx context.Context, operation publisher.Operatio
 		"GIT_CONFIG_VALUE_0": "Authorization: Bearer " + p.token,
 	}
 	remote := p.gitRemoteURL()
+
+	if fetchErr := publisherGit(ctx, temporary, extra, "fetch", "--no-tags", "--no-write-fetch-head", remote, operation.BaseRef+":refs/duto/base"); fetchErr != nil {
+		return fetchErr
+	}
+
+	base, err := publisherGitOutput(ctx, temporary, nil, "rev-parse", "refs/duto/base")
+	if err != nil || strings.TrimSpace(string(base)) != operation.BaseSHA {
+		return publisher.ErrConflict
+	}
+
+	if err := publisherGit(ctx, temporary, nil, "-c", "protocol.file.allow=always", "fetch", "--no-tags", "--no-write-fetch-head", operation.SourceBundle, "HEAD:refs/duto/source"); err != nil {
+		return err
+	}
 
 	return publisherGit(ctx, temporary, extra, "push", remote, "refs/duto/source:"+operation.TargetRef)
 }
@@ -357,6 +366,12 @@ func (p *Publisher) gitRemoteURL() string {
 }
 
 func publisherGit(ctx context.Context, directory string, extra map[string]string, args ...string) error {
+	_, err := publisherGitOutput(ctx, directory, extra, args...)
+
+	return err
+}
+
+func publisherGitOutput(ctx context.Context, directory string, extra map[string]string, args ...string) ([]byte, error) {
 	command := exec.CommandContext(ctx, "git", args...) //nolint:gosec // publisher owns every Git argv shape
 	command.Dir = directory
 
@@ -370,12 +385,12 @@ func publisherGit(ctx context.Context, directory string, extra map[string]string
 
 	output, err := command.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("running fixed publisher Git command: %w", err)
+		return nil, fmt.Errorf("running fixed publisher Git command: %w", err)
 	}
 
 	if len(output) > maxPublisherResponseBytes {
-		return errPublisherResponse
+		return nil, errPublisherResponse
 	}
 
-	return nil
+	return output, nil
 }
